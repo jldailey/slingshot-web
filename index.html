@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<title>None</title>
+		<script src="js/bling.js"></script>
+		<style type="text/css">
+			body { padding: 0; margin: 0; overflow: hidden; }
+			canvas { padding: 0; margin: 0; }
+		</style>
+	</head>
+	<body>
+		<canvas />
+		<script type="text/javascript" src="js/coffee-script.js"></script>
+		<script type="text/coffeescript" src="js/clock.coffee"></script>
+		<script type="text/coffeescript">
+			w = h = 0
+			body = document.body
+			canvas = $("canvas")
+				.zap("height", w = Math.max body.scrollHeight, body.clientHeight)
+				.zap("width", h = Math.max body.scrollWidth, body.clientWidth)
+			context = canvas.select('getContext').call('2d')
+			context.zap('fillStyle', 'black')
+				.select('fillRect')
+				.call(0,0,w,h)
+			context.zap('fillStyle', 'grey')
+				.select('fillRect')
+				.call(w/3,h/3,w/3,h/3)
+
+			clock = new Clock()
+			clock.on 'tick', (dt) ->
+				$.log 'tick', dt
+			canvas.bind 'click', -> clock.toggle()
+		</script>
+	</body>
+</head>
