@@ -10,16 +10,17 @@ scheduleFrame =
 class window.Clock extends $.EventEmitter
 	constructor: ->
 		super @
-		started = 0
-		@start = $.trace 'starting', =>
-			t = started = $.now
-			f = =>
-				t += (dt = $.now - t)
+		@started = 0
+	start: ->
+		t = @started = $.now
+		f = =>
+			t += (dt = $.now - t)
+			if @started > 0
 				@emit 'tick', dt
-				if started > 0
-					scheduleFrame(f)
-		@stop = $.trace 'stopping', =>
-			started = 0
-		@toggle = =>
-			if started then @stop() else @start()
+				scheduleFrame(f)
+		scheduleFrame(f)
+	stop: ->
+		@started = 0
+	toggle: ->
+		if @started then @stop() else @start()
 
