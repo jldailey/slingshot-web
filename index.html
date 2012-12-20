@@ -9,27 +9,71 @@
 		</style>
 	</head>
 	<body>
-		<canvas />
+		<canvas></canvas>
 		<script type="text/javascript" src="js/coffee-script.js"></script>
 		<script type="text/coffeescript" src="js/clock.coffee"></script>
 		<script type="text/coffeescript">
-			w = h = 0
 			body = document.body
+			aspect_ratio = 16 / 9
+			h = Math.max(body.scrollHeight, body.clientHeight)
+			w = h / aspect_ratio
 			canvas = $("canvas")
-				.zap("height", w = Math.max body.scrollHeight, body.clientHeight)
-				.zap("width", h = Math.max body.scrollWidth, body.clientWidth)
+				.zap("height", h)
+				.zap("width", w)
+				.css
+					position: "fixed"
+					left: "50%"
+					"margin-left": $.px(-w/2)
 			context = canvas.select('getContext').call('2d')
-			context.zap('fillStyle', 'black')
-				.select('fillRect')
-				.call(0,0,w,h)
-			context.zap('fillStyle', 'grey')
-				.select('fillRect')
-				.call(w/3,h/3,w/3,h/3)
+			context.drawRect = (x,y,w,h,fill,stroke) ->
+				@zap('fillStyle', fill)
+					.zap('strokeStyle', stroke)
+					.select('fillRect')
+					.call(x,y,w,h)
+
+			context.drawRect 0,0, w,h, 'black'
+			context.drawRect w/4,h/4, w/2, h/2, 'gray'
 
 			clock = new Clock()
-			clock.on 'tick', (dt) ->
-				$.log 'tick', dt
 			canvas.bind 'click', -> clock.toggle()
+			objects = []
+			clock.on 'tick', (dt) ->
+				for obj in objects
+					obj.tick(dt)
+				for obj in objects
+					context.map -> obj.draw @
+
+			class Rect
+				constructor: (@x,@y,@w,@h,@fill,@stroke) ->
+				tick: (dt) ->
+				draw: (ctx) ->
+					ctx.beginPath()
+					ctx.rect @x,@y,@w,@h
+					ctx.closePath()
+					if @fill
+						ctx.fillStyle = @fill
+						ctx.fill()
+					if @stroke
+						ctx.strokeStyle = @stroke
+						ctx.stroke()
+
+			class Circle
+				constructor: (@x,@y,@r,@fill,@stroke) ->
+				tick: (dt) ->
+				draw: (ctx) ->
+					ctx.beginPath()
+					ctx.arc @x, @y, @r, 0, Math.PI*2, true
+					ctx.closePath()
+					if @fill
+						ctx.fillStyle = @fill
+						ctx.fill()
+					if @stroke
+						ctx.strokeStyle = @stroke
+						ctx.stroke()
+
+			objects.push new Rect 0,0,w,h,'green'
+			objects.push new Circle w/2,h/2,w/4,'red'
+
 		</script>
 	</body>
-</head>
+</html>
