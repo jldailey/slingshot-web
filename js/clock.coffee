@@ -12,6 +12,7 @@ class window.Clock extends $.EventEmitter
 		super @
 		@started = 0
 	start: ->
+		return if @started
 		t = @started = $.now
 		f = =>
 			t += (dt = $.now - t)
@@ -19,8 +20,10 @@ class window.Clock extends $.EventEmitter
 				@emit 'tick', dt
 				scheduleFrame(f)
 		scheduleFrame(f)
+		@emit 'started'
 	stop: ->
 		@started = 0
+		@emit 'stopped'
 	toggle: ->
 		if @started then @stop() else @start()
 
