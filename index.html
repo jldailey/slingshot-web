@@ -33,6 +33,11 @@
 
 			context.drawRect 0,0, w,h, 'black'
 			context.drawRect w/4,h/4, w/2, h/2, 'gray'
+			context.each ->
+				@fillStyle = 'black'
+				@font = '20px sans-serif'
+				@textAlign = 'center'
+				@fillText 'Click', w/2, h/3
 
 			SpringForce = (x,y,k) ->
 				(obj) ->
@@ -62,6 +67,7 @@
 					expires = $.now + duration
 					(@forces[expires] or= []).push f
 				position: (@x, @y) -> @
+				translate: (dx, dy) -> @x += dx; @y += dy; @
 				tick: (dt) ->
 					dts = dt/1000
 					now = $.now
@@ -131,6 +137,14 @@
 					ctx.closePath()
 					Entity::draw.call @, ctx
 
+			class window.FootballPlayer extends Circle
+				constructor: ->
+					super @
+					@damping(1)
+						.mass(100) # 220 lbs
+						.fill('red')
+						.radius(w/20)
+
 
 			objects = []
 			window.clock = new Clock()
@@ -141,11 +155,26 @@
 					context.each -> obj.draw @
 			clock.on 'started', -> $.log 'started'
 			clock.on 'stopped', -> $.log 'stopped'
-			objects.push new Rect().position(0,0).size(w,h).fill('green')
-			objects.push new Circle().position(w/2,h/2).radius(w/16).fill('red')
+			objects.push new Rect().position(0,0).size(w,h).fill('green').damping(MAX_DAMPING)
+			objects.push new FootballPlayer().position(w/2,h/2)
 
 			dragging = false
 			dragTarget = dragStart = dragEnd = null
+			class DragTacker extends Entity
+				constructor: ->
+					super @
+					@fill 'white'
+					@stroke 'white'
+				draw: (ctx) ->
+					if dragTarget and dragEnd
+						target = $(dragTarget.x, dragTarget.y)
+						ctx.beginPath()
+						ctx.moveTo target...
+						ctx.lineTo target.plus(dragEnd.scale(-1)).plus(target)...
+						ctx.lineWidth = 4
+						ctx.closePath()
+						Entity::draw.call @, ctx
+			objects.push new DragTacker()
 			canvas.bind 'mousedown', (evt) ->
 				clock.start()
 				$.log 'dragTarget', dragTarget = Circle.findAt(evt.offsetX, evt.offsetY)
@@ -157,12 +186,11 @@
 			canvas.bind 'mouseup', (evt) ->
 				dragging = false
 				if dragTarget
-					dragTarget.fill('red').position(dragStart...)
+					delta = dragStart.plus(dragEnd.scale(-1)).scale(1000).push(100)
+					dragTarget.applyForce delta...
 				dragTarget = dragStart = dragEnd = null
 			canvas.bind 'mousemove', (evt) ->
 				dragEnd = $(evt.offsetX, evt.offsetY)
-				if dragTarget
-					dragTarget.position(dragEnd...)
 
 		</script>
 	</body>
