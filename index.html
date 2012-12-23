@@ -49,7 +49,7 @@
 
 			MIN_MASS_KG = 0.0001
 			MIN_DAMPING = 0.001
-			MAX_DAMPING = 10
+			MAX_DAMPING = 9999999
 			class Entity
 				constructor: ->
 					@x = @y = @ax = @ay = @vx = @vy = 0
@@ -117,6 +117,17 @@
 					ctx.closePath()
 					Entity::draw.call @, ctx
 
+			class Text extends Entity
+				text: (@_text) -> @
+				font: (@_font) -> @
+				textAlign: (@_textAlign) -> @
+				draw: (ctx) ->
+					if @_font then ctx.font = @_font
+					if @_textAlign then ctx.textAlign = @_textAlign
+					if @_fill then ctx.fillText @_text, @x, @y
+					if @_stroke then ctx.strokeText @_stroke, @x, @y
+					Entity::draw.call @, ctx
+
 			distance = (x1,y1,x2,y2) ->
 				Math.sqrt (Math.pow(x2-x1, 2) + Math.pow(y2-y1, 2))
 
@@ -137,14 +148,19 @@
 					ctx.closePath()
 					Entity::draw.call @, ctx
 
+			Teams =
+				red: ->
+					@fill('red')
+				blue: ->
+					@fill('blue')
 			class window.FootballPlayer extends Circle
-				constructor: ->
+				team: (@_team) -> Teams[@_team]?.call @; @
+				constructor: (team) ->
 					super @
-					@damping(1)
+					@damping(500)
 						.mass(100) # 220 lbs
-						.fill('red')
-						.radius(w/20)
-
+						.radius(w/48)
+						.team(team)
 
 			objects = []
 			window.clock = new Clock()
@@ -156,7 +172,16 @@
 			clock.on 'started', -> $.log 'started'
 			clock.on 'stopped', -> $.log 'stopped'
 			objects.push new Rect().position(0,0).size(w,h).fill('green').damping(MAX_DAMPING)
-			objects.push new FootballPlayer().position(w/2,h/2)
+			x = w/3
+			y = h/2
+			for _ in [0...5]
+				objects.push new FootballPlayer('red').position(x,y)
+				x += w/16
+			x = w/3
+			y += h/10
+			for _ in [0...5]
+				objects.push new FootballPlayer('blue').position(x,y)
+				x += w/16
 
 			dragging = false
 			dragTarget = dragStart = dragEnd = null
@@ -171,7 +196,7 @@
 						ctx.beginPath()
 						ctx.moveTo target...
 						ctx.lineTo target.plus(dragEnd.scale(-1)).plus(target)...
-						ctx.lineWidth = 4
+						ctx.lineWidth = w/128
 						ctx.closePath()
 						Entity::draw.call @, ctx
 			objects.push new DragTacker()
@@ -182,11 +207,10 @@
 					dragging = true
 					dragStart = $ dragTarget.x, dragTarget.y
 					dragEnd = dragStart.slice()
-					dragTarget.fill('blue')
 			canvas.bind 'mouseup', (evt) ->
 				dragging = false
 				if dragTarget
-					delta = dragStart.plus(dragEnd.scale(-1)).scale(1000).push(100)
+					delta = dragStart.plus(dragEnd.scale(-1)).scale(3500).push(100)
 					dragTarget.applyForce delta...
 				dragTarget = dragStart = dragEnd = null
 			canvas.bind 'mousemove', (evt) ->
