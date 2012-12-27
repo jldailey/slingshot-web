@@ -25,9 +25,12 @@ context.each ->
 	@textAlign = 'center'
 	@fillText 'Click', w/2, h/3
 
-SpringForce = (x,y,k) ->
+springForce = (x,y,k) ->
 	(obj) ->
 		$(obj.x - y,obj.y - y).scale(-k)
+
+distance = (x,y) ->
+	x.plus(y.scale(-1)).magnitude()
 
 MIN_MASS_KG = 0.0001
 MIN_DAMPING = 0.001
@@ -35,25 +38,37 @@ MAX_DAMPING = 9999999
 IMPULSE_FORCE_SCALE = 6000
 PLAYER_DAMPING = 600
 class Entity
+	instances = $()
+	@get = (i) -> instances[i]
+	@findNear = (x,y) ->
+		x = $ x,y
+		instances.filter(-> distance(@x,x) < @r)
 	constructor: ->
-		@x = @y = @ax = @ay = @vx = @vy = 0
-		@kg = 1.0
-		@_damping = .00005
+		@x = $.zeros(2)
+		@a = $.zeros(2)
+		@v = $.zeros(2)
+		@kg = MIN_MASS_KG
+		@_damping = MIN_DAMPING
 		@_lineWidth = 0
+		@_scale = 1.0
+		@_rotate = 0.0
 		@forces = Object.create null
+		instances.push @
 	fill: (@_fill) -> @
 	stroke: (@_stroke) -> @
 	lineWidth: (@_lineWidth) -> @
+	scale: (@_scale) -> @
+	rotate: (@_rotate) -> @
 	mass: (kg) -> @kg = Math.max(MIN_MASS_KG,kg); @
 	damping: (c) -> @_damping = Math.min(MAX_DAMPING, Math.max(MIN_DAMPING, c)); @
-	applyForce: (x, y, duration) ->
+	applyForce: (duration, x...) ->
 		expires = $.now + duration
-		(@forces[expires] or= []).push $(x,y)
+		(@forces[expires] or= []).push $(x)
 	applyDynamicForce: (f, duration) ->
 		expires = $.now + duration
 		(@forces[expires] or= []).push f
-	position: (@x, @y) -> @
-	translate: (dx, dy) -> @x += dx; @y += dy; @
+	position: (x...) -> @x = $(x); @
+	translate: (dx...) -> @x = @x.plus dx; @
 	tick: (dt) ->
 		dts = dt/1000
 		now = $.now
@@ -69,29 +84,36 @@ class Entity
 				delete @forces[expires]
 
 		# damping force
-		total_force = total_force.plus $(@vx,@vy).scale(-@_damping)
+		total_force = total_force.plus @v.scale(-@_damping)
 
 		# Velocity Vertlet integration applies accel->velocity->position
 		dtsq = Math.pow(dts,2)
-		@position(
-			@x + (@vx * dts) + (.5 * @ax * dtsq),
-			@y + (@vy * dts) + (.5 * @ay * dtsq)
-		)
+		@x.plus(@v.scale(dts).plus(@a.scale .5 * dtsq))
+
+		# @position(
+			# @x + (@vx * dts) + (.5 * @ax * dtsq),
+			# @y + (@vy * dts) + (.5 * @ay * dtsq)
+		# )
 		new_acceleration = total_force.scale(1/@kg)
-		avg_acceleration = new_acceleration.plus($(@ax,@ay)).scale(.5)
-		@vx += avg_acceleration[0] * dts
-		@vy += avg_acceleration[1] * dts
+		avg_acceleration = new_acceleration.plus(@a).scale(.5)
+		@v.plus(avg_acceleration.scale(dts))
 
-
-	draw: (ctx) ->
+	preDraw: (ctx) ->
+		if @x.magnitude() isnt 0
+			ctx.translate @x.first(2)...
+		if @_scale isnt 1.0
+			ctx.scale @_scale
+		if @_rotate isnt 0
+			ctx.rotate @_rotate
 		if @_fill
 			ctx.fillStyle = @_fill
-			ctx.fill()
 		if @_lineWidth
 			ctx.lineWidth = @_lineWidth
 		if @_stroke
 			ctx.strokeStyle = @_stroke
-			ctx.stroke()
+	draw: (ctx) ->
+		if @_fill then ctx.fill()
+		if @_stroke then ctx.stroke()
 
 class Rect extends Entity
 	constructor: ->
@@ -101,22 +123,32 @@ class Rect extends Entity
 	area: -> @w * @h
 	draw: (ctx) ->
 		ctx.beginPath()
-		ctx.rect @x,@y,@w,@h
+		ctx.rect 0,0,@w,@h
 		ctx.closePath()
-		Entity::draw.call @, ctx
+		super ctx
 
 class FootballField extends Rect
 	constructor: ->
 		super @
 		@fill('green')
-			.lineWidth(14)
-			.stroke('black')
 			.damping(MAX_DAMPING)
+			.size(60,100)
 	draw: (ctx) ->
+		# A field should be:
+		# 10m: end zone
+		# 100m: lines
+		# 7m: score board
+		# 3m: play/pause
+		super ctx
 		ctx.beginPath()
-		ctx.rect @x,@y,@w,@h
+		for y in [10..100] by 10
+			ctx.moveTo 0,y
+			ctx.lineTo @w,y
+		ctx.lineWidth = .1
+		ctx.strokeStyle = 'white'
+		ctx.stroke()
 		ctx.closePath()
-		Entity::draw.call @, ctx
+
 
 class Text extends Entity
 	text: (@_text) -> @
@@ -125,29 +157,30 @@ class Text extends Entity
 	draw: (ctx) ->
 		if @_font then ctx.font = @_font
 		if @_textAlign then ctx.textAlign = @_textAlign
-		if @_fill then ctx.fillText @_text, @x, @y
-		if @_stroke then ctx.strokeText @_stroke, @x, @y
-		Entity::draw.call @, ctx
+		if @_fill then ctx.fillText @_text, 0, 0
+		if @_stroke then ctx.strokeText @_stroke, 0, 0
+		super ctx
 
-distance = (x1,y1,x2,y2) ->
-	Math.sqrt (Math.pow(x2-x1, 2) + Math.pow(y2-y1, 2))
+trs =
+	'click': 'Click'
+tr = (t) -> trs[t] ? t
+class Label extends Text
+	constructor: (@_code) ->
+		super @
+	draw: (ctx) ->
+		@_text = tr @_code
 
 class window.Circle extends Entity
-	instances = $()
-	@get = (i) -> instances[i]
-	@findAt = (x,y) ->
-		instances.filter(-> distance(@x,@y,x,y) < @r).first()
 	constructor: ->
 		super @
 		@r = 0
-		instances.push @
 	radius: (@r) -> @
 	area: -> Math.PI * @r * @r
 	draw: (ctx) ->
 		ctx.beginPath()
-		ctx.arc @x, @y, @r, 0, Math.PI*2, true
+		ctx.arc 0, 0, @r, 0, Math.PI*2, true
 		ctx.closePath()
-		Entity::draw.call @, ctx
+		super ctx
 
 Teams =
 	red: ->
@@ -160,29 +193,33 @@ class window.FootballPlayer extends Circle
 		super @
 		@damping(PLAYER_DAMPING)
 			.mass(100) # 220 lbs
-			.radius(w/48)
+			.radius(.5) # in meters
 			.team(team)
 
 objects = []
 window.clock = new Clock()
+window.camera =
+	position: $.zeros(2).plus([5,10])
+	zoom: 3.0
+	rotate: 0.0
 clock.on 'tick', (dt) ->
 	for obj in objects
 		obj.tick(dt)
 	for obj in objects
-		context.each -> obj.draw @
+		context.each ->
+			@save()
+			@scale w/(60/camera.zoom), h/(100/camera.zoom)
+			@translate camera.position.scale(-1)...
+			@rotate camera.rotation
+			obj.preDraw @
+			obj.draw @
+			@restore()
 clock.on 'started', -> $.log 'started'
 clock.on 'stopped', -> $.log 'stopped'
-objects.push new FootballField().position(0,0).size(w,h)
-x = w/3
-y = h/2
-for _ in [0...5]
-	objects.push new FootballPlayer('red').position(x,y)
-	x += w/16
-x = w/3
-y += h/10
-for _ in [0...5]
-	objects.push new FootballPlayer('blue').position(x,y)
-	x += w/16
+objects.push new FootballField().position(0,0)
+for x in [10..50] by 5
+	objects.push new FootballPlayer('red').position x, 40
+	objects.push new FootballPlayer('blue').position x, 60
 
 dragging = false
 dragTarget = dragStart = dragEnd = null
@@ -199,23 +236,26 @@ class DragTacker extends Entity
 			ctx.lineTo target.plus(dragEnd.scale(-1)).plus(target)...
 			ctx.lineWidth = w/128
 			ctx.closePath()
-			Entity::draw.call @, ctx
+			super ctx
 objects.push new DragTacker()
-canvas.bind 'mousedown, touchstart', (evt) ->
+
+canvas.bind 'mousedown touchstart', (evt) ->
 	clock.start()
-	$.log 'dragTarget', dragTarget = Circle.findAt(evt.offsetX, evt.offsetY)
 	if dragTarget
+		$.log 'dragTarget', dragTarget = Circle.findNear(evt.offsetX, evt.offsetY).first()
 		dragging = true
 		dragStart = $ dragTarget.x, dragTarget.y
 		dragEnd = dragStart.slice()
 canvas.bind 'touchcancel', (evt) ->
 	dragging = false
 	dragTarget = dragStart = dragEnd = null
-canvas.bind 'mouseup, touchend', (evt) ->
+canvas.bind 'mouseup touchend', (evt) ->
 	dragging = false
 	if dragTarget
-		delta = dragStart.plus(dragEnd.scale(-1)).scale(IMPULSE_FORCE_SCALE).push(100)
-		dragTarget.applyForce delta...
+		impulse = dragStart
+			.plus(dragEnd.scale(-1)) # from end to start
+			.scale(IMPULSE_FORCE_SCALE)
+		dragTarget.applyForce 100, impulse... # applied to the object
 	dragTarget = dragStart = dragEnd = null
-canvas.bind 'mousemove, touchmove', (evt) ->
+canvas.bind 'mousemove touchmove', (evt) ->
 	dragEnd = $(evt.offsetX, evt.offsetY)
