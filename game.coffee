@@ -3,6 +3,11 @@ body = document.body
 aspect_ratio = 16 / 9
 h = Math.max(body.scrollHeight, body.clientHeight)
 w = h / aspect_ratio
+MIN_MASS_KG = 0.0001
+MIN_DAMPING = 0.001
+MAX_DAMPING = 9999999
+IMPULSE_FORCE_SCALE = 6000
+PLAYER_DAMPING = 600
 canvas = $("canvas")
 	.zap("height", h)
 	.zap("width", w)
@@ -17,32 +22,29 @@ context.drawRect = (x,y,w,h,fill,stroke) ->
 		.select('fillRect')
 		.call(x,y,w,h)
 
-context.drawRect 0,0, w,h, 'black'
-context.drawRect w/4,h/4, w/2, h/2, 'gray'
-context.each ->
-	@fillStyle = 'black'
-	@font = '20px sans-serif'
-	@textAlign = 'center'
-	@fillText 'Click', w/2, h/3
+do drawSplashScreen = ->
+	context.drawRect 0,0, w,h, 'black'
+	context.drawRect w/4,h/4, w/2, h/2, 'gray'
+	context.each ->
+		@fillStyle = 'black'
+		@font = '20px sans-serif'
+		@textAlign = 'center'
+		@fillText 'Click', w/2, h/3
 
 springForce = (x,y,k) ->
 	(obj) ->
 		$(obj.x - y,obj.y - y).scale(-k)
 
 distance = (x,y) ->
-	x.plus(y.scale(-1)).magnitude()
+	x.minus(y).magnitude()
 
-MIN_MASS_KG = 0.0001
-MIN_DAMPING = 0.001
-MAX_DAMPING = 9999999
-IMPULSE_FORCE_SCALE = 6000
-PLAYER_DAMPING = 600
 class Entity
 	instances = $()
 	@get = (i) -> instances[i]
-	@findNear = (x,y) ->
-		x = $ x,y
-		instances.filter(-> distance(@x,x) < @r)
+	@findWithin = (radius, limit) ->
+		(x,y) ->
+			x = $ x,y
+			instances.filter (-> distance(@x,x) < radius), limit
 	constructor: ->
 		@x = $.zeros(2)
 		@a = $.zeros(2)
@@ -188,12 +190,13 @@ Teams =
 	blue: ->
 		@fill('blue')
 class window.FootballPlayer extends Circle
+	@RADIUS = .5
 	team: (@_team) -> Teams[@_team]?.call @; @
 	constructor: (team) ->
 		super @
 		@damping(PLAYER_DAMPING)
 			.mass(100) # 220 lbs
-			.radius(.5) # in meters
+			.radius(FootballPlayer.RADIUS) # in meters
 			.team(team)
 
 objects = []
@@ -202,6 +205,11 @@ window.camera =
 	position: $.zeros(2).plus([5,10])
 	zoom: 3.0
 	rotate: 0.0
+	toFieldCoords: (x,y) ->
+		$(
+			(x * 60 / @zoom) + camera.position[0],
+			(y * 100 / @zoom) + camera.position[1]
+		)
 clock.on 'tick', (dt) ->
 	for obj in objects
 		obj.tick(dt)
@@ -233,29 +241,45 @@ class DragTacker extends Entity
 			target = $(dragTarget.x, dragTarget.y)
 			ctx.beginPath()
 			ctx.moveTo target...
-			ctx.lineTo target.plus(dragEnd.scale(-1)).plus(target)...
+			ctx.lineTo target.minus(dragEnd).plus(target)...
 			ctx.lineWidth = w/128
 			ctx.closePath()
 			super ctx
 objects.push new DragTacker()
 
+findNearestTo = Entity.findWithin(FootballPlayer.RADIUS, 1)
+$.defineProperty window.MouseEvent::, 'touchX',
+	get: -> @offsetX
+$.defineProperty window.MouseEvent::, 'touchY',
+	get: -> @offsetY
+$.defineProperty window.TouchEvent::, 'touchX',
+	get: -> @touches[0].clientX - @touches[0].target.clientWidth
+$.defineProperty window.TouchEvent::, 'touchY',
+	get: -> @touches[0].clientY
+
 canvas.bind 'mousedown touchstart', (evt) ->
 	clock.start()
+	$.log evt.type, evt.touchX, evt.touchY
+	if evt.touches
+		$.log evt.touches[0]
 	if dragTarget
-		$.log 'dragTarget', dragTarget = Circle.findNear(evt.offsetX, evt.offsetY).first()
+		$.log 'dragTarget', dragTarget = findNearestTo(evt.touchX, evt.touchY).first()
 		dragging = true
 		dragStart = $ dragTarget.x, dragTarget.y
 		dragEnd = dragStart.slice()
 canvas.bind 'touchcancel', (evt) ->
+	$.log evt.type
 	dragging = false
 	dragTarget = dragStart = dragEnd = null
 canvas.bind 'mouseup touchend', (evt) ->
 	dragging = false
 	if dragTarget
 		impulse = dragStart
-			.plus(dragEnd.scale(-1)) # from end to start
+			.minus(dragEnd) # from end to start
 			.scale(IMPULSE_FORCE_SCALE)
 		dragTarget.applyForce 100, impulse... # applied to the object
 	dragTarget = dragStart = dragEnd = null
 canvas.bind 'mousemove touchmove', (evt) ->
-	dragEnd = $(evt.offsetX, evt.offsetY)
+	dragEnd = switch evt.type
+		when 'mousemove' then $ evt.offsetX, evt.offsetY
+		when 'touchmove' then $ evt.touches[0].clientX, evt.touches[0].clientY
