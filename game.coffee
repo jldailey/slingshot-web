@@ -3,27 +3,26 @@ body = document.body
 aspect_ratio = 16 / 9
 h = Math.max(body.scrollHeight, body.clientHeight)
 w = h / aspect_ratio
+
+# w and h are the real-pixel heights of the canvas
+# we also need a conversion from pixels to yards and back
+# for now, we just assume that the play area is 40yds long
+yards = h/40
+# so, (10*yards) is the number of pixels in 10 yards
+# and (10/yards) is the number of yards in 10 pixels
+
+
+# Create the canvas to draw on
 canvas = $("canvas")
 	.zap("height", h)
 	.zap("width", w)
-	.css
+	.css # center the canvas
 		position: "fixed"
 		left: "50%"
 		"margin-left": $.px(-w/2)
-context = canvas.select('getContext').call('2d')
-context.drawRect = (x,y,w,h,fill,stroke) ->
-	@zap('fillStyle', fill)
-		.zap('strokeStyle', stroke)
-		.select('fillRect')
-		.call(x,y,w,h)
 
-context.drawRect 0,0, w,h, 'black'
-context.drawRect w/4,h/4, w/2, h/2, 'gray'
-context.each ->
-	@fillStyle = 'black'
-	@font = '20px sans-serif'
-	@textAlign = 'center'
-	@fillText 'Click', w/2, h/3
+# Create the drawing context
+context = canvas.select('getContext').call('2d')
 
 SpringForce = (x,y,k) ->
 	(obj) ->
@@ -32,66 +31,81 @@ SpringForce = (x,y,k) ->
 MIN_MASS_KG = 0.0001
 MIN_DAMPING = 0.001
 MAX_DAMPING = 9999999
-IMPULSE_FORCE_SCALE = 6000
-PLAYER_DAMPING = 600
+IMPULSE_FORCE_SCALE = 130
+PLAYER_DAMPING = 11
+
+_tmp_log_limit = 0
+
+# Entity is the base class for all world objects; it handles physics, etc.
 class Entity
 	constructor: ->
-		@x = @y = @ax = @ay = @vx = @vy = 0
-		@kg = 1.0
-		@_damping = .00005
-		@_lineWidth = 0
-		@forces = Object.create null
+		@x = $.zeros(2) # position in m
+		@a = $.zeros(2) # acceleration in m/s^2
+		@v = $.zeros(2) # velocity in m/s
+		@kg = MIN_MASS_KG # mass in kg
+		@_damping = MIN_DAMPING # damping coefficient (unitless)
+		@forces = Object.create null # the set of forces applied to this object
 	fill: (@_fill) -> @
 	stroke: (@_stroke) -> @
-	lineWidth: (@_lineWidth) -> @
 	mass: (kg) -> @kg = Math.max(MIN_MASS_KG,kg); @
 	damping: (c) -> @_damping = Math.min(MAX_DAMPING, Math.max(MIN_DAMPING, c)); @
-	applyForce: (x, y, duration) ->
+	applyForce: (duration, x...) ->
+		$.log "applying force: #{x} for duration: #{duration}"
 		expires = $.now + duration
-		(@forces[expires] or= []).push $(x,y)
-	applyDynamicForce: (f, duration) ->
+		(@forces[expires] or= []).push x
+	applyDynamicForce: (duration, f) ->
 		expires = $.now + duration
 		(@forces[expires] or= []).push f
-	position: (@x, @y) -> @
-	translate: (dx, dy) -> @x += dx; @y += dy; @
+	position: (x...) -> @x = $ x; @
+	translate: (dx...) ->
+		for i in [0...dx.length] by 1
+			if (not isFinite(dx[i])) or Math.abs(dx[i]) < .01
+				dx[i] = 0
+		if dx[0] isnt 0 or dx[1] isnt 0
+			$.log dx[0], dx[1]
+			@x = @x.plus(dx); @
 	tick: (dt) ->
-		dts = dt/1000
+		dts = dt/1000 # convert time to seconds; so physics works in m/s
 		now = $.now
-		total_force = $(0,0)
-		for expires of @forces
-			if now < expires
-				for force in @forces[expires]
-					total_force = total_force.plus switch $.type force
-						when 'bling' then force
-						when 'function' then force(@)
-						else ($.log 'invalid force', force; [0,0])
-			else
+
+		# Add up all the forces on this object
+		total_force = $.zeros(2)
+
+		# Temporary forces are organized by expiration time
+		for expires,forces of @forces
+			if now >= expires # if they are expired, just clean them out
+				$.log "expiring force"
 				delete @forces[expires]
+				continue
+			# otherwise, add up all the forces in this time bucket
+			for force in forces
+				$.log "adding force"
+				total_force = total_force.plus switch $.type force
+					when 'bling','array' then force
+					when 'function' then force(@)
+					else ($.log 'invalid force', force; [0,0])
 
-		# damping force
-		total_force = total_force.plus $(@vx,@vy).scale(-@_damping)
+		# always include the damping force
+		total_force = total_force.plus @v.scale(-@_damping)
 
-		# Velocity Vertlet integration applies accel->velocity->position
-		dtsq = Math.pow(dts,2)
-		@position(
-			@x + (@vx * dts) + (.5 * @ax * dtsq),
-			@y + (@vy * dts) + (.5 * @ay * dtsq)
-		)
+		# Apply accel->velocity->position using vertlet integration:
+		# 1. adjust the position based on current velocity plus some part of the acceleration
+		@translate @v.scale(dts).plus(@a.scale(.5 * dts * dts))...
+		# 2. compute the new acceleration from total force
 		new_acceleration = total_force.scale(1/@kg)
-		avg_acceleration = new_acceleration.plus($(@ax,@ay)).scale(.5)
-		@vx += avg_acceleration[0] * dts
-		@vy += avg_acceleration[1] * dts
+		# 3. adjust velocity based on two-frame average acceleration
+		@v = @v.plus(new_acceleration.plus(@a).scale(.5))
+		# 4. record acceleration for averaging
+		@a = new_acceleration
 
-
+	preDraw: (ctx) ->
+		ctx.translate @x...
+		if @facing then ctx.rotate @facing
+		if @_fill then ctx.fillStyle = @_fill
+		if @_stroke then ctx.strokeStyle = @_stroke
 	draw: (ctx) ->
-		if @_fill
-			ctx.fillStyle = @_fill
-			ctx.fill()
-		if @_lineWidth
-			ctx.lineWidth = @_lineWidth
-		if @_stroke
-			ctx.strokeStyle = @_stroke
-			ctx.stroke()
+		if @_fill then ctx.fill()
+		if @_stroke then ctx.stroke()
 
 class Rect extends Entity
 	constructor: ->
@@ -101,22 +115,15 @@ class Rect extends Entity
 	area: -> @w * @h
 	draw: (ctx) ->
 		ctx.beginPath()
-		ctx.rect @x,@y,@w,@h
+		ctx.rect 0,0,@w,@h
 		ctx.closePath()
-		Entity::draw.call @, ctx
+		super ctx
 
 class FootballField extends Rect
 	constructor: ->
 		super @
 		@fill('green')
-			.lineWidth(14)
-			.stroke('black')
 			.damping(MAX_DAMPING)
-	draw: (ctx) ->
-		ctx.beginPath()
-		ctx.rect @x,@y,@w,@h
-		ctx.closePath()
-		Entity::draw.call @, ctx
 
 class Text extends Entity
 	text: (@_text) -> @
@@ -125,9 +132,9 @@ class Text extends Entity
 	draw: (ctx) ->
 		if @_font then ctx.font = @_font
 		if @_textAlign then ctx.textAlign = @_textAlign
-		if @_fill then ctx.fillText @_text, @x, @y
-		if @_stroke then ctx.strokeText @_stroke, @x, @y
-		Entity::draw.call @, ctx
+		if @_fill then ctx.fillText @_text, @x...
+		if @_stroke then ctx.strokeText @_stroke, @x...
+		super ctx
 
 distance = (x1,y1,x2,y2) ->
 	Math.sqrt (Math.pow(x2-x1, 2) + Math.pow(y2-y1, 2))
@@ -135,8 +142,8 @@ distance = (x1,y1,x2,y2) ->
 class window.Circle extends Entity
 	instances = $()
 	@get = (i) -> instances[i]
-	@findAt = (x,y) ->
-		instances.filter(-> distance(@x,@y,x,y) < @r).first()
+	@findAt = (x...) ->
+		instances.filter((-> @x.minus(x).magnitude() < @r), 1).first()
 	constructor: ->
 		super @
 		@r = 0
@@ -145,15 +152,14 @@ class window.Circle extends Entity
 	area: -> Math.PI * @r * @r
 	draw: (ctx) ->
 		ctx.beginPath()
-		ctx.arc @x, @y, @r, 0, Math.PI*2, true
+		ctx.arc 0, 0, @r, 0, Math.PI*2, true
 		ctx.closePath()
-		Entity::draw.call @, ctx
+		super ctx
 
 Teams =
-	red: ->
-		@fill('red')
-	blue: ->
-		@fill('blue')
+	red: -> @fill('red')
+	blue: -> @fill('blue')
+
 class window.FootballPlayer extends Circle
 	team: (@_team) -> Teams[@_team]?.call @; @
 	constructor: (team) ->
@@ -169,44 +175,62 @@ clock.on 'tick', (dt) ->
 	for obj in objects
 		obj.tick(dt)
 	for obj in objects
-		context.each -> obj.draw @
+		context.each ->
+			@save()
+			obj.preDraw @
+			obj.draw @
+			@restore()
 clock.on 'started', -> $.log 'started'
 clock.on 'stopped', -> $.log 'stopped'
 objects.push new FootballField().position(0,0).size(w,h)
-x = w/3
-y = h/2
-for _ in [0...5]
-	objects.push new FootballPlayer('red').position(x,y)
-	x += w/16
-x = w/3
-y += h/10
-for _ in [0...5]
-	objects.push new FootballPlayer('blue').position(x,y)
-	x += w/16
+
+Formations =
+	defense:
+		"4-3": [
+			[-5, -10], [5, -10], # FS + SS
+			[-9, -2.5], [9, -2.5], # CB x 2
+			[-4, -4.5], [0, -4.5], [4, -4.5], # LB x 3
+			[-3, -1.5], [-1, -1.5], [1, -1.5], [3, -1.5], # DL x 4
+		]
+	offense:
+		"single-back": [
+			[-4,0.5], [-2,0.5], # LG,LT
+			[4,0.5],[2,0.5], # RG,RT
+			[0,0.5], # C
+			[0,1.5], # QB
+			[0,4.5], # HB
+			[-8,1.5], [8,1.5], # WR
+		]
+spawnFormation = (x,y,formation, team) ->
+	for pos in formation
+		objects.push new FootballPlayer(team).position(pos[0]*yards+x,pos[1]*yards+y)
+
+spawnFormation(w/2,h/1.5, Formations.defense["4-3"], 'red')
+spawnFormation(w/2,h/1.5, Formations.offense["single-back"], 'blue')
 
 dragging = false
 dragTarget = dragStart = dragEnd = null
-class DragTacker extends Entity
+class ImpulseVector extends Entity
 	constructor: ->
 		super @
-		@fill 'white'
-		@stroke 'white'
 	draw: (ctx) ->
 		if dragTarget and dragEnd
-			target = $(dragTarget.x, dragTarget.y)
+			target = dragTarget.x
+			ctx.translate 0,0
 			ctx.beginPath()
 			ctx.moveTo target...
-			ctx.lineTo target.plus(dragEnd.scale(-1)).plus(target)...
+			ctx.lineTo target.minus(dragEnd).plus(target)...
 			ctx.lineWidth = w/128
+			ctx.strokeStyle = 'white'
+			ctx.stroke()
 			ctx.closePath()
-			Entity::draw.call @, ctx
-objects.push new DragTacker()
+objects.push new ImpulseVector()
 canvas.bind 'mousedown, touchstart', (evt) ->
 	clock.start()
 	$.log 'dragTarget', dragTarget = Circle.findAt(evt.offsetX, evt.offsetY)
 	if dragTarget
 		dragging = true
-		dragStart = $ dragTarget.x, dragTarget.y
+		dragStart = dragTarget.x
 		dragEnd = dragStart.slice()
 canvas.bind 'touchcancel', (evt) ->
 	dragging = false
@@ -214,8 +238,8 @@ canvas.bind 'touchcancel', (evt) ->
 canvas.bind 'mouseup, touchend', (evt) ->
 	dragging = false
 	if dragTarget
-		delta = dragStart.plus(dragEnd.scale(-1)).scale(IMPULSE_FORCE_SCALE).push(100)
-		dragTarget.applyForce delta...
+		delta = dragStart.minus(dragEnd).scale(IMPULSE_FORCE_SCALE)
+		dragTarget.applyForce 100, delta...
 	dragTarget = dragStart = dragEnd = null
 canvas.bind 'mousemove, touchmove', (evt) ->
 	dragEnd = $(evt.offsetX, evt.offsetY)
