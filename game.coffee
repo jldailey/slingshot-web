@@ -1,4 +1,9 @@
 
+MIN_MASS_KG = 0.0001
+MIN_DAMPING = 0.001
+MAX_DAMPING = 9999999
+IMPULSE_FORCE_SCALE = 130
+PLAYER_DAMPING = 11
 body = document.body
 aspect_ratio = 16 / 9
 h = Math.max(body.scrollHeight, body.clientHeight)
@@ -19,29 +24,19 @@ canvas = $("canvas")
 	.css # center the canvas
 		position: "fixed"
 		left: "50%"
-		"margin-left": $.px(-w/2)
+		padding: "0"
+		margin: "0 0 0 #{$.px -w/2}"
 
 # Create the drawing context
 context = canvas.select('getContext').call('2d')
 context.each ->
 	@textAlign = 'center'
-	@font = '20px sans-serif'
+	@font = '20px courier'
 	@fillText 'Click to Start', w/2, h/2
 
-SpringForce = (x,y,k) ->
-	(obj) ->
-		$(obj.x - y,obj.y - y).scale(-k)
-
-MIN_MASS_KG = 0.0001
-MIN_DAMPING = 0.001
-MAX_DAMPING = 9999999
-IMPULSE_FORCE_SCALE = 130
-PLAYER_DAMPING = 11
-
-_tmp_log_limit = 0
 
 # Entity is the base class for all world objects; it handles physics, etc.
-class Entity
+class Entity extends $.EventEmitter
 	constructor: ->
 		@x = $.zeros(2) # position in m
 		@a = $.zeros(2) # acceleration in m/s^2
@@ -140,18 +135,10 @@ class Text extends Entity
 		if @_stroke then ctx.strokeText @_stroke, @x...
 		super ctx
 
-distance = (x1,y1,x2,y2) ->
-	Math.sqrt (Math.pow(x2-x1, 2) + Math.pow(y2-y1, 2))
-
 class window.Circle extends Entity
-	instances = $()
-	@get = (i) -> instances[i]
-	@findAt = (x...) ->
-		instances.filter((-> @x.minus(x).magnitude() < @r), 1).first()
 	constructor: ->
 		super @
 		@r = 0
-		instances.push @
 	radius: (@r) -> @
 	area: -> Math.PI * @r * @r
 	draw: (ctx) ->
@@ -165,13 +152,35 @@ Teams =
 	blue: -> @fill('blue')
 
 class window.FootballPlayer extends Circle
+	instances = $()
+	@get = (i) -> instances[i]
+	@findAt = (x...) ->
+		instances.filter((-> @x.minus(x).magnitude() < @r), 1).first()
 	team: (@_team) -> Teams[@_team]?.call @; @
 	constructor: (team) ->
 		super @
+		instances.push @
+		@highlighted = false
+		@number = $.random.integer 1,99
 		@damping(PLAYER_DAMPING)
 			.mass(100) # 220 lbs
 			.radius(w/48)
 			.team(team)
+	toggleHighlight: ->
+		@highlight = not @highlighted
+	draw: (ctx) ->
+		super ctx
+		if @highlighted
+			ctx.beginPath()
+			ctx.arc 0, 0, @r, 0, Math.PI*2, true
+			ctx.lineWidth = w/128
+			ctx.strokeStyle = 'yellow'
+			ctx.stroke()
+			ctx.closePath()
+		ctx.textAlign = 'center'
+		ctx.fillStyle = 'white'
+		ctx.font = "#{$.px .66*yards} courier"
+		ctx.fillText @number, 0,@r/2
 
 objects = []
 window.clock = new Clock()
@@ -212,38 +221,47 @@ spawnFormation = (x,y,formation, team) ->
 spawnFormation(w/2,h/1.5, Formations.defense["4-3"], 'red')
 spawnFormation(w/2,h/1.5, Formations.offense["single-back"], 'blue')
 
-dragging = false
-dragTarget = dragStart = dragEnd = null
+Event.position = (evt) ->
+	$ evt.offsetX, evt.offsetY
+
+MouseEvent::position = -> $ @offsetX, @offsetY
+TouchEvent::position = -> $ @touches[0].clientX, @touches[0].clientY
+
 class ImpulseVector extends Entity
 	constructor: ->
 		super @
+		@reset()
+		canvas.bind 'mousedown', (evt) =>
+			clock.start()
+			$.log '@dragTarget', @dragTarget = FootballPlayer.findAt(evt.position()...)
+			if @dragTarget
+				@dragStart = @dragTarget.x
+				@dragEnd = @dragStart.slice()
+				@dragTarget.highlighted = true
+		canvas.bind 'touchcancel', (evt) =>
+			@dragTarget?.highlighted = false
+			@reset()
+		canvas.bind 'mouseup', (evt) =>
+			if @dragTarget
+				delta = @dragStart.minus(@dragEnd).scale(IMPULSE_FORCE_SCALE)
+				if delta.magnitude() > 0
+					@dragTarget.applyForce 100, delta...
+					@dragTarget.highlighted = false
+			@dragTarget = @dragStart = @dragEnd = null
+		canvas.bind 'mousemove', (evt) =>
+			@dragEnd = evt.position()
+	reset: ->
+		@dragTarget = @dragStart = @dragEnd = null
 	draw: (ctx) ->
-		if dragTarget and dragEnd
-			target = dragTarget.x
+		if @dragTarget and @dragEnd
+			target = @dragTarget.x
 			ctx.translate 0,0
 			ctx.beginPath()
 			ctx.moveTo target...
-			ctx.lineTo target.minus(dragEnd).plus(target)...
+			ctx.lineTo target.minus(@dragEnd).plus(target)...
 			ctx.lineWidth = w/128
 			ctx.strokeStyle = 'white'
 			ctx.stroke()
 			ctx.closePath()
+
 objects.push new ImpulseVector()
-canvas.bind 'mousedown, touchstart', (evt) ->
-	clock.start()
-	$.log 'dragTarget', dragTarget = Circle.findAt(evt.offsetX, evt.offsetY)
-	if dragTarget
-		dragging = true
-		dragStart = dragTarget.x
-		dragEnd = dragStart.slice()
-canvas.bind 'touchcancel', (evt) ->
-	dragging = false
-	dragTarget = dragStart = dragEnd = null
-canvas.bind 'mouseup, touchend', (evt) ->
-	dragging = false
-	if dragTarget
-		delta = dragStart.minus(dragEnd).scale(IMPULSE_FORCE_SCALE)
-		dragTarget.applyForce 100, delta...
-	dragTarget = dragStart = dragEnd = null
-canvas.bind 'mousemove, touchmove', (evt) ->
-	dragEnd = $(evt.offsetX, evt.offsetY)
