@@ -23,6 +23,10 @@ canvas = $("canvas")
 
 # Create the drawing context
 context = canvas.select('getContext').call('2d')
+context.each ->
+	@textAlign = 'center'
+	@font = '20px sans-serif'
+	@fillText 'Click to Start', w/2, h/2
 
 SpringForce = (x,y,k) ->
 	(obj) ->
