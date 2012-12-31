@@ -2,8 +2,8 @@
 MIN_MASS_KG = 0.0001
 MIN_DAMPING = 0.001
 MAX_DAMPING = 9999999
-IMPULSE_FORCE_SCALE = 130
-PLAYER_DAMPING = 11
+IMPULSE_FORCE_SCALE = 120
+PLAYER_DAMPING = 12
 body = document.body
 aspect_ratio = 16 / 9
 h = Math.max(body.scrollHeight, body.clientHeight)
@@ -34,16 +34,26 @@ context.each ->
 	@font = '20px courier'
 	@fillText 'Click to Start', w/2, h/2
 
+distance_cache = Object.create(null) # used to help collision detection
 
 # Entity is the base class for all world objects; it handles physics, etc.
 class Entity extends $.EventEmitter
 	constructor: ->
+		@guid = $.random.string 32
 		@x = $.zeros(2) # position in m
 		@a = $.zeros(2) # acceleration in m/s^2
 		@v = $.zeros(2) # velocity in m/s
 		@kg = MIN_MASS_KG # mass in kg
 		@_damping = MIN_DAMPING # damping coefficient (unitless)
 		@forces = Object.create null # the set of forces applied to this object
+	getDistance: (entB) ->
+		keyA = @guid + entB.guid
+		keyB = entB.guid + @guid
+		return switch true
+			when keyA of distance_cache then distance_cache[keyA]
+			when keyB of distance_cache then distance_cache[keyB]
+			else distance_cache[keyA] = distance_cache[keyB] = @x.minus(entB.x).magnitude()
+		
 	fill: (@_fill) -> @
 	stroke: (@_stroke) -> @
 	mass: (kg) -> @kg = Math.max(MIN_MASS_KG,kg); @
@@ -61,7 +71,6 @@ class Entity extends $.EventEmitter
 			if (not isFinite(dx[i])) or Math.abs(dx[i]) < .01
 				dx[i] = 0
 		if dx[0] isnt 0 or dx[1] isnt 0
-			$.log dx[0], dx[1]
 			@x = @x.plus(dx); @
 	tick: (dt) ->
 		dts = dt/1000 # convert time to seconds; so physics works in m/s
@@ -73,12 +82,10 @@ class Entity extends $.EventEmitter
 		# Temporary forces are organized by expiration time
 		for expires,forces of @forces
 			if now >= expires # if they are expired, just clean them out
-				$.log "expiring force"
 				delete @forces[expires]
 				continue
 			# otherwise, add up all the forces in this time bucket
 			for force in forces
-				$.log "adding force"
 				total_force = total_force.plus switch $.type force
 					when 'bling','array' then force
 					when 'function' then force(@)
@@ -86,6 +93,15 @@ class Entity extends $.EventEmitter
 
 		# always include the damping force
 		total_force = total_force.plus @v.scale(-@_damping)
+
+		# and any collision forces
+		for obj in objects
+			if $.isType FootballPlayer, obj
+				continue if obj.number is @number
+				d = @getDistance(obj)
+				r = @r + obj.r
+				if d < r
+					total_force = total_force.plus @x.minus(obj.x).scale(IMPULSE_FORCE_SCALE)
 
 		# Apply accel->velocity->position using vertlet integration:
 		# 1. adjust the position based on current velocity plus some part of the acceleration
@@ -185,6 +201,7 @@ class window.FootballPlayer extends Circle
 objects = []
 window.clock = new Clock()
 clock.on 'tick', (dt) ->
+	distance_cache = Object.create(null)
 	for obj in objects
 		obj.tick(dt)
 	for obj in objects
@@ -238,20 +255,24 @@ class ImpulseVector extends Entity
 				@dragStart = @dragTarget.x
 				@dragEnd = @dragStart.slice()
 				@dragTarget.highlighted = true
+			evt.preventAll()
 		canvas.bind 'touchcancel', (evt) =>
 			@dragTarget?.highlighted = false
 			@reset()
-		canvas.bind 'mouseup', (evt) =>
-			if @dragTarget
-				delta = @dragStart.minus(@dragEnd).scale(IMPULSE_FORCE_SCALE)
-				if delta.magnitude() > 0
-					@dragTarget.applyForce 100, delta...
-					@dragTarget.highlighted = false
-			@dragTarget = @dragStart = @dragEnd = null
+		canvas.bind 'mouseup', (evt) => @applyForce(); evt.preventAll()
 		canvas.bind 'mousemove', (evt) =>
 			@dragEnd = evt.position()
 	reset: ->
 		@dragTarget = @dragStart = @dragEnd = null
+	applyForce: ->
+		if @dragTarget
+			delta = @dragStart.minus(@dragEnd).scale(IMPULSE_FORCE_SCALE)
+			if delta.magnitude() > 0
+				@dragTarget.applyForce 100, delta...
+				@dragTarget.highlighted = false
+			else clock.stop()
+		@reset()
+		
 	draw: (ctx) ->
 		if @dragTarget and @dragEnd
 			target = @dragTarget.x
