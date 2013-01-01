@@ -34,18 +34,33 @@ context.each ->
 	@font = '20px courier'
 	@fillText 'Click to Start', w/2, h/2
 
-distance_cache = Object.create(null) # used to help collision detection
 
 # Entity is the base class for all world objects; it handles physics, etc.
 class Entity extends $.EventEmitter
+	distance_cache = Object.create null # used to help collision detection
+	collision_cache = Object.create null
+	@clearCaches = ->
+		distance_cache = Object.create null
+		collision_cache = Object.create null
+
+	# property functions:
+	fill: (@_fill) -> @
+	stroke: (@_stroke) -> @
+	mass: (kg) -> @kg = Math.max(MIN_MASS_KG,kg); @
+	damping: (c) -> @_damping = Math.min(MAX_DAMPING, Math.max(MIN_DAMPING, c)); @
+	position: (x...) -> @x = $ x; @
+
 	constructor: ->
 		@guid = $.random.string 32
-		@x = $.zeros(2) # position in m
+		@x = $.zeros(2) # position in m (actually, in px, a problem, since it should be in m)
 		@a = $.zeros(2) # acceleration in m/s^2
 		@v = $.zeros(2) # velocity in m/s
 		@kg = MIN_MASS_KG # mass in kg
 		@_damping = MIN_DAMPING # damping coefficient (unitless)
 		@forces = Object.create null # the set of forces applied to this object
+
+	# get the distance between objects, using caching
+	# suitable for use in [collision] loops in a single frame
 	getDistance: (entB) ->
 		keyA = @guid + entB.guid
 		keyB = entB.guid + @guid
@@ -53,25 +68,29 @@ class Entity extends $.EventEmitter
 			when keyA of distance_cache then distance_cache[keyA]
 			when keyB of distance_cache then distance_cache[keyB]
 			else distance_cache[keyA] = distance_cache[keyB] = @x.minus(entB.x).magnitude()
-		
-	fill: (@_fill) -> @
-	stroke: (@_stroke) -> @
-	mass: (kg) -> @kg = Math.max(MIN_MASS_KG,kg); @
-	damping: (c) -> @_damping = Math.min(MAX_DAMPING, Math.max(MIN_DAMPING, c)); @
+	
+	# applies a temporary force to this entity
 	applyForce: (duration, x...) ->
 		$.log "applying force: #{x} for duration: #{duration}"
 		expires = $.now + duration
 		(@forces[expires] or= []).push x
+
+	# applies a force function to this entity
+	# the force function receives the entity to be forced, and returns a force vector
 	applyDynamicForce: (duration, f) ->
 		expires = $.now + duration
 		(@forces[expires] or= []).push f
-	position: (x...) -> @x = $ x; @
+
+	# adjust our position by this offset (with sanity checks)
 	translate: (dx...) ->
 		for i in [0...dx.length] by 1
 			if (not isFinite(dx[i])) or Math.abs(dx[i]) < .01
 				dx[i] = 0
 		if dx[0] isnt 0 or dx[1] isnt 0
-			@x = @x.plus(dx); @
+			@x = @x.plus(dx)
+		@
+
+	# run one frame for just this object
 	tick: (dt) ->
 		dts = dt/1000 # convert time to seconds; so physics works in m/s
 		now = $.now
@@ -81,7 +100,8 @@ class Entity extends $.EventEmitter
 
 		# Temporary forces are organized by expiration time
 		for expires,forces of @forces
-			if now >= expires # if they are expired, just clean them out
+			# if they are expired, just clean them out
+			if now >= expires
 				delete @forces[expires]
 				continue
 			# otherwise, add up all the forces in this time bucket
@@ -94,7 +114,7 @@ class Entity extends $.EventEmitter
 		# always include the damping force
 		total_force = total_force.plus @v.scale(-@_damping)
 
-		# and any collision forces
+		# add any collision forces
 		for obj in objects
 			if $.isType FootballPlayer, obj
 				continue if obj.number is @number
@@ -189,7 +209,7 @@ class window.FootballPlayer extends Circle
 		if @highlighted
 			ctx.beginPath()
 			ctx.arc 0, 0, @r, 0, Math.PI*2, true
-			ctx.lineWidth = w/128
+			ctx.lineWidth = w/256
 			ctx.strokeStyle = 'yellow'
 			ctx.stroke()
 			ctx.closePath()
@@ -259,7 +279,7 @@ class ImpulseVector extends Entity
 		canvas.bind 'touchcancel', (evt) =>
 			@dragTarget?.highlighted = false
 			@reset()
-		canvas.bind 'mouseup', (evt) => @applyForce(); evt.preventAll()
+		canvas.bind 'mouseup, mouseout', (evt) => @applyForce(); evt.preventAll()
 		canvas.bind 'mousemove', (evt) =>
 			@dragEnd = evt.position()
 	reset: ->
