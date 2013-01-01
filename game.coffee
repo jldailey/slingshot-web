@@ -30,10 +30,35 @@ canvas = $("canvas")
 # Create the drawing context
 context = canvas.select('getContext').call('2d')
 context.each ->
-	@textAlign = 'center'
-	@font = '20px courier'
-	@fillText 'Click to Start', w/2, h/2
+	drawText = =>
+		@fillStyle = 'black'
+		@fillRect 0,0,w,h
+		@fillStyle = 'white'
+		@textAlign = 'center'
+		@font = "#{$.px w/4} courier"
+		y = h/5
+		@fillText "I", w/2, 1*y
+		@fillText "AM", w/2,2*y
+		@fillText "A", w/2, 3*y
+		@fillText "GOD",w/2,4*y
+		setTimeout drawBolt, $.random.integer 500,3000
 
+	drawBolt = =>
+		@beginPath()
+		@moveTo w*.6, 0
+		@lineTo w*.4, h*.6
+		@lineTo w*.5, h*.66
+		@lineTo w*.3, h
+		@lineTo w*.6, h*.66
+		@lineTo w*.5, h*.6
+		@lineTo w*.7, 0
+		@closePath()
+		@fillStyle = 'white'
+		@fill()
+		setTimeout drawText, 100
+	
+	drawText()
+	
 
 # Entity is the base class for all world objects; it handles physics, etc.
 class Entity extends $.EventEmitter
