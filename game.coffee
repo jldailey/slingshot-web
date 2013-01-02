@@ -4,10 +4,13 @@ MIN_DAMPING = 0.001
 MAX_DAMPING = 9999999
 IMPULSE_FORCE_SCALE = 120
 PLAYER_DAMPING = 12
+PLAYER_MASS_KG = 100
 body = document.body
 aspect_ratio = 16 / 9
 h = Math.max(body.scrollHeight, body.clientHeight)
 w = h / aspect_ratio
+PLAYER_RADIUS = w/48
+BALL_RADIUS = w/90
 
 # w and h are the real-pixel heights of the canvas
 # we also need a conversion from pixels to yards and back
@@ -162,7 +165,9 @@ class Entity extends $.EventEmitter
 		# always include the damping force
 		total_force = total_force.plus @v.scale(-@_damping)
 
-		# use collision to initiate grappling
+		# use collision to:
+		#  * initiate grappling
+		#  * pick up loose balls
 		if $.isType FootballPlayer, @
 			# add forces from people grappling onto us
 			if @grapple.by?
@@ -170,6 +175,12 @@ class Entity extends $.EventEmitter
 				@attemptBreakGrapple()
 			else if not @hasBall
 				for obj in objects
+					if $.isType Football, obj
+						continue if obj.owner?
+						d = @getDistance(obj)
+						r = @r + obj.r
+						if d < r
+							@giveBall(obj)
 					if $.isType FootballPlayer, obj
 						continue if obj.guid is @guid
 						continue if obj._team is @_team
@@ -228,8 +239,13 @@ class Text extends Entity
 		super ctx
 
 class window.Circle extends Entity
+	instances = $()
+	@get = (i) -> instances[i]
+	@findAt = (x...) ->
+		instances.filter((-> @x.minus(x).magnitude() < @r), 1).first()
 	constructor: ->
 		super @
+		instances.push @
 		@r = 0
 	radius: (@r) -> @
 	area: -> Math.PI * @r * @r
@@ -243,23 +259,65 @@ Teams =
 	red: -> @fill('red')
 	blue: -> @fill('blue')
 
+class window.Football extends Circle
+	constructor: ->
+		super @
+		@owner = null
+		@highlighted = false
+		@radius(BALL_RADIUS)
+			.damping(PLAYER_DAMPING)
+			.mass(PLAYER_MASS_KG)
+	tick: (dt) ->
+		if @owner?
+			x = @owner.x
+			if @x.minus(x).magnitude() > 2
+				r = @r*1.5
+				@position x.plus([r,r])...
+		else
+			super dt
+	draw: (ctx) ->
+		ctx.beginPath()
+		end = -Math.PI
+		if @owner?
+			end = -Math.PI/2
+		ctx.arc 0,0, @r, Math.PI, end, true
+		ctx.lineWidth = @r*2
+		ctx.strokeStyle = 'brown'
+		ctx.stroke()
+		ctx.closePath()
+
+		ctx.beginPath()
+		y = -@r*.5
+		ctx.moveTo @r, y
+		ctx.lineTo y, @r
+		ctx.lineWidth = w >>> 8
+		ctx.strokeStyle = 'white'
+		ctx.stroke()
+		ctx.closePath()
+
+		if @highlighted
+			ctx.beginPath()
+			ctx.arc 0,0,@r, Math.PI, end, true
+			ctx.strokeStyle = 'yellow'
+			unless @owner?
+				ctx.strokeStyle = 'red'
+			ctx.lineWidth = w >>> 8
+			ctx.stroke()
+			ctx.closePath()
+
+	
 class window.FootballPlayer extends Circle
-	instances = $()
-	@get = (i) -> instances[i]
-	@findAt = (x...) ->
-		instances.filter((-> @x.minus(x).magnitude() < @r), 1).first()
 	team: (@_team) -> Teams[@_team]?.call @; @
 	constructor: (team) ->
 		super @
-		instances.push @
 		@highlighted = false
 		@grapple =
 			by: null
 			ing: null
 		@number = $.random.integer 1,99
 		@damping(PLAYER_DAMPING)
-			.mass(100) # 220 lbs
-			.radius(w/48)
+			.mass(PLAYER_MASS_KG)
+			.radius(PLAYER_RADIUS)
 			.team(team)
 	toggleHighlight: ->
 		@highlight = not @highlighted
@@ -273,23 +331,45 @@ class window.FootballPlayer extends Circle
 		@grapple.by.grapple.ing = null
 		@grapple.by = null
 		if gap < 0
-			delta = dx.normalize().scale(-gap).scale(1.1) #.scale($.random.real(.6,1.4))
-			$.log 'delta', delta
+			delta = dx.normalize().scale(-gap).scale(1.05) #.scale($.random.real(.6,1.4))
 			@translate delta...
-		
-	draw: (ctx) ->
-		super ctx
-		if @highlighted
-			ctx.beginPath()
-			ctx.arc 0, 0, @r, 0, Math.PI*2, true
-			ctx.lineWidth = w/256
-			ctx.strokeStyle = 'yellow'
-			ctx.stroke()
-			ctx.closePath()
+	giveBall: (ball) ->
+		return if ball.prevOwner is @
+		(ball.owner = @).ball = ball
+	releaseBall: ->
+		if @ball?
+			b = @ball
+			b.prevOwner = @
+			@ball = b.owner = null
+			$.delay 100, -> b.prevOwner = null
+	
+	drawHighlight: (ctx) ->
+		ctx.beginPath()
+		ctx.arc 0, 0, @r, 0, Math.PI*2, true
+		ctx.lineWidth = w/256
+		ctx.strokeStyle = 'yellow'
+		ctx.stroke()
+		ctx.closePath()
+
+	drawNumbers: (ctx) ->
 		ctx.textAlign = 'center'
 		ctx.fillStyle = 'white'
 		ctx.font = "#{$.px .66*yards} courier"
 		ctx.fillText @number, 0,@r/2
+	
+	drawBall: (ctx) ->
+		ctx.beginPath()
+		ctx.arc 0,0, @r, 0, Math.PI*2, true
+		ctx.strokeStyle = 'brown'
+		ctx.lineWidth = w/256
+		ctx.stroke()
+		ctx.closePath()
+
+	draw: (ctx) ->
+		super ctx
+		if @ball? then @drawBall ctx
+		if @highlighted then @drawHighlight ctx
+		@drawNumbers ctx
 
 objects = []
 window.clock = new Clock()
@@ -306,28 +386,36 @@ clock.on 'tick', (dt) ->
 clock.on 'started', -> $.log 'started'
 clock.on 'stopped', -> $.log 'stopped'
 objects.push new FootballField().position(0,0).size(w,h)
+gameBall = new Football().position(w/2,h/2)
 
 Formations =
 	defense:
-		"4-3": [
-			[-5, -10], [5, -10], # FS + SS
-			[-9, -2.5], [9, -2.5], # CB x 2
-			[-4, -4.5], [0, -4.5], [4, -4.5], # LB x 3
-			[-3, -1.5], [-1, -1.5], [1, -1.5], [3, -1.5], # DL x 4
-		]
+		"4-3":
+			positions: [
+				[-5, -10], [5, -10], # FS + SS
+				[-9, -2.5], [9, -2.5], # CB x 2
+				[-4, -4.5], [0, -4.5], [4, -4.5], # LB x 3
+				[-3, -1.5], [-1, -1.5], [1, -1.5], [3, -1.5], # DL x 4
+			]
 	offense:
-		"single-back": [
-			[-4,0.5], [-2,0.5], # LG,LT
-			[4,0.5],[2,0.5], # RG,RT
-			[0,0.5], # C
-			[0,1.5], # QB
-			[0,4.5], # HB
-			[-8,1.5], [8,1.5], # WR
-		]
+		"single-back":
+			positions: [
+				[-3,0.5], [-1.5,0.5], # LG,LT
+				[0,0.5], # C
+				[3,0.5],[1.5,0.5], # RG,RT
+				[0,1.5], # QB
+				[0,4.5], # HB
+				[-8,1.5], [8,1.5], # WR
+			]
+			ball: 5
 spawnFormation = (x,y,formation, team) ->
-	for pos in formation
+	start = objects.length
+	for pos in formation.positions
 		objects.push new FootballPlayer(team).position(pos[0]*yards+x,pos[1]*yards+y)
+	if formation.ball
+		objects[start + formation.ball].giveBall(gameBall)
 
+objects.push gameBall
 spawnFormation(w/2,h/1.5, Formations.defense["4-3"], 'red')
 spawnFormation(w/2,h/1.5, Formations.offense["single-back"], 'blue')
 
@@ -343,7 +431,7 @@ class ImpulseVector extends Entity
 		@reset()
 		canvas.bind 'mousedown', (evt) =>
 			clock.start()
-			$.log '@dragTarget', @dragTarget = FootballPlayer.findAt(evt.position()...)
+			$.log '@dragTarget', @dragTarget = Circle.findAt(evt.position()...)
 			if @dragTarget
 				@dragStart = @dragTarget.x
 				@dragEnd = @dragStart.slice()
@@ -361,11 +449,19 @@ class ImpulseVector extends Entity
 		if @dragTarget
 			delta = @dragStart.minus(@dragEnd).scale(IMPULSE_FORCE_SCALE)
 			if delta.magnitude() > 0
-				@dragTarget.applyForce 100, delta...
+				ok = true
+				if $.isType Football, @dragTarget
+					# a football with no owner cannot be moved
+					unless @dragTarget.owner?
+						ok and= false
+					# and impulsing the ball is akin to throwing it, it is removed from its owner
+					@dragTarget.owner?.releaseBall()
+				if ok
+					@dragTarget.applyForce 100, delta...
 				@dragTarget.highlighted = false
 			else clock.stop()
 		@reset()
-		
+
 	draw: (ctx) ->
 		if @dragTarget and @dragEnd
 			target = @dragTarget.x
@@ -375,6 +471,11 @@ class ImpulseVector extends Entity
 			ctx.lineTo target.minus(@dragEnd).plus(target)...
 			ctx.lineWidth = w/128
 			ctx.strokeStyle = 'white'
+			if $.isType Football, @dragTarget
+				if @dragTarget.owner?
+					ctx.strokeStyle = 'yellow'
+				else
+					ctx.strokeStyle = 'red'
 			ctx.stroke()
 			ctx.closePath()
 
