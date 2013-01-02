@@ -12,7 +12,7 @@ w = h / aspect_ratio
 # w and h are the real-pixel heights of the canvas
 # we also need a conversion from pixels to yards and back
 # for now, we just assume that the play area is 40yds long
-yards = h/40
+yard = yards = h/40
 # so, (10*yards) is the number of pixels in 10 yards
 # and (10/yards) is the number of yards in 10 pixels
 
@@ -30,18 +30,24 @@ canvas = $("canvas")
 # Create the drawing context
 context = canvas.select('getContext').call('2d')
 context.each ->
+	fillMultiLineText = (interval, lines...) =>
+		for i in [0...lines.length] by 1
+			@fillText lines[i], w/2, interval * (i+1)
+
+	textIndex = 0
+	texts = [
+		" READY TO PLAY?".split(' ')
+		" CLICK TO START!".split(' ')
+	]
 	drawText = =>
 		@fillStyle = 'black'
 		@fillRect 0,0,w,h
 		@fillStyle = 'white'
 		@textAlign = 'center'
 		@font = "#{$.px w/4} courier"
-		y = h/5
-		@fillText "I", w/2, 1*y
-		@fillText "AM", w/2,2*y
-		@fillText "A", w/2, 3*y
-		@fillText "GOD",w/2,4*y
-		setTimeout drawBolt, $.random.integer 500,3000
+		fillMultiLineText h/5, texts[textIndex++]...
+		if textIndex < texts.length
+			setTimeout drawBolt, $.random.integer 1000,1500
 
 	drawBolt = =>
 		@beginPath()
@@ -57,16 +63,23 @@ context.each ->
 		@fill()
 		setTimeout drawText, 100
 	
+	drawFlash = =>
+		@fillStyle = 'white'
+		@fillRect 0,0,w,h
+		setTimeout drawText, 100
+	
 	drawText()
 	
 
 # Entity is the base class for all world objects; it handles physics, etc.
 class Entity extends $.EventEmitter
 	distance_cache = Object.create null # used to help collision detection
-	collision_cache = Object.create null
 	@clearCaches = ->
 		distance_cache = Object.create null
-		collision_cache = Object.create null
+	@removeFromCache = (ent) ->
+		delete distance_cache[ent.guid]
+		for k of distance_cache
+			delete distance_cache[k][ent.guid]
 
 	# property functions:
 	fill: (@_fill) -> @
@@ -78,21 +91,28 @@ class Entity extends $.EventEmitter
 	constructor: ->
 		@guid = $.random.string 32
 		@x = $.zeros(2) # position in m (actually, in px, a problem, since it should be in m)
-		@a = $.zeros(2) # acceleration in m/s^2
-		@v = $.zeros(2) # velocity in m/s
 		@kg = MIN_MASS_KG # mass in kg
 		@_damping = MIN_DAMPING # damping coefficient (unitless)
-		@forces = Object.create null # the set of forces applied to this object
+		@fullStop()
+	
+	# come to a complete and instant stop
+	fullStop: ->
+		@a = $.zeros(2) # acceleration in m/s^2
+		@v = $.zeros(2) # velocity in m/s
+		@forces = Object.create null # the set of (temporary) forces on this object
 
 	# get the distance between objects, using caching
 	# suitable for use in [collision] loops in a single frame
 	getDistance: (entB) ->
-		keyA = @guid + entB.guid
-		keyB = entB.guid + @guid
-		return switch true
-			when keyA of distance_cache then distance_cache[keyA]
-			when keyB of distance_cache then distance_cache[keyB]
-			else distance_cache[keyA] = distance_cache[keyB] = @x.minus(entB.x).magnitude()
+		a = @guid
+		b = entB.guid
+		if a of distance_cache and b of distance_cache[a]
+			return distance_cache[a][b]
+		if b of distance_cache and a of distance_cache[b]
+			return distance_cache[b][a]
+		distance_cache[a] or= Object.create null
+		distance_cache[b] or= Object.create null
+		distance_cache[a][b] = distance_cache[b][a] = @x.minus(entB.x).magnitude()
 	
 	# applies a temporary force to this entity
 	applyForce: (duration, x...) ->
@@ -139,18 +159,29 @@ class Entity extends $.EventEmitter
 		# always include the damping force
 		total_force = total_force.plus @v.scale(-@_damping)
 
-		# add any collision forces
-		for obj in objects
-			if $.isType FootballPlayer, obj
-				continue if obj.number is @number
-				d = @getDistance(obj)
-				r = @r + obj.r
-				if d < r
-					total_force = total_force.plus @x.minus(obj.x).scale(IMPULSE_FORCE_SCALE)
+		# use collision to initiate grappling
+		if $.isType FootballPlayer, @
+			# add forces from people grappling onto us
+			if @grapple.by
+				@fullStop()
+				@attemptBreakGrapple()
+			else if not @hasBall
+				for obj in objects
+					if $.isType FootballPlayer, obj
+						continue if obj.number is @number
+						continue if obj._team is @_team
+						d = @getDistance(obj)
+						r = @r + obj.r
+						if d < r
+							@attemptGrapple(obj)
+							total_force = $.zeros(2)
 
 		# Apply accel->velocity->position using vertlet integration:
 		# 1. adjust the position based on current velocity plus some part of the acceleration
-		@translate @v.scale(dts).plus(@a.scale(.5 * dts * dts))...
+		motion = @v.scale(dts).plus(@a.scale(.5 * dts * dts))
+		@translate motion...
+		if motion.magnitude() > 0
+			Entity.removeFromCache(@)
 		# 2. compute the new acceleration from total force
 		new_acceleration = total_force.scale(1/@kg)
 		# 3. adjust velocity based on two-frame average acceleration
@@ -222,6 +253,9 @@ class window.FootballPlayer extends Circle
 		super @
 		instances.push @
 		@highlighted = false
+		@grapple =
+			by: null
+			ing: null
 		@number = $.random.integer 1,99
 		@damping(PLAYER_DAMPING)
 			.mass(100) # 220 lbs
@@ -229,6 +263,14 @@ class window.FootballPlayer extends Circle
 			.team(team)
 	toggleHighlight: ->
 		@highlight = not @highlighted
+	attemptGrapple: (other) ->
+		@grapple.ing = other
+		other.grapple.by = @
+	attemptBreakGrapple: ->
+		@translate $.random.integer(0,1*yard), $.random.integer(0,1*yard)
+		@grapple.by.grapple.ing = null
+		@grapple.by = null
+		
 	draw: (ctx) ->
 		super ctx
 		if @highlighted
@@ -246,7 +288,7 @@ class window.FootballPlayer extends Circle
 objects = []
 window.clock = new Clock()
 clock.on 'tick', (dt) ->
-	distance_cache = Object.create(null)
+	# Entity.clearCaches()
 	for obj in objects
 		obj.tick(dt)
 	for obj in objects
