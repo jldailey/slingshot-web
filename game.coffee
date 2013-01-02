@@ -29,6 +29,8 @@ canvas = $("canvas")
 
 # Create the drawing context
 context = canvas.select('getContext').call('2d')
+
+# Draw a placeholder splash sequence
 context.each ->
 	fillMultiLineText = (interval, lines...) =>
 		for i in [0...lines.length] by 1
@@ -47,7 +49,7 @@ context.each ->
 		@font = "#{$.px w/4} courier"
 		fillMultiLineText h/5, texts[textIndex++]...
 		if textIndex < texts.length
-			setTimeout drawBolt, $.random.integer 1000,1500
+			setTimeout drawBolt, 1000
 
 	drawBolt = =>
 		@beginPath()
@@ -129,7 +131,7 @@ class Entity extends $.EventEmitter
 	# adjust our position by this offset (with sanity checks)
 	translate: (dx...) ->
 		for i in [0...dx.length] by 1
-			if (not isFinite dx[i]) or (Math.abs dx[i]) < .01
+			if (not isFinite dx[i]) # or (Math.abs dx[i]) < .0001
 				dx[i] = 0
 		if dx[0] isnt 0 or dx[1] isnt 0
 			@x = @x.plus dx
@@ -169,7 +171,7 @@ class Entity extends $.EventEmitter
 			else if not @hasBall
 				for obj in objects
 					if $.isType FootballPlayer, obj
-						continue if obj.number is @number
+						continue if obj.guid is @guid
 						continue if obj._team is @_team
 						d = @getDistance(obj)
 						r = @r + obj.r
@@ -266,9 +268,14 @@ class window.FootballPlayer extends Circle
 		@grapple.ing = other
 		other.grapple.by = @
 	attemptBreakGrapple: ->
+		dx = @x.minus(@grapple.by.x)
+		gap = dx.magnitude() - (@r + @grapple.by.r)
 		@grapple.by.grapple.ing = null
 		@grapple.by = null
-		@translate $.random.integer(-1,2), $.random.integer(-1,2)
+		if gap < 0
+			delta = dx.normalize().scale(-gap).scale(1.1) #.scale($.random.real(.6,1.4))
+			$.log 'delta', delta
+			@translate delta...
 		
 	draw: (ctx) ->
 		super ctx
