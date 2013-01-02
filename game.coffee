@@ -89,7 +89,7 @@ class Entity extends $.EventEmitter
 	position: (x...) -> @x = $ x; @
 
 	constructor: ->
-		@guid = $.random.string 32
+		@guid = $.random.string 8
 		@x = $.zeros(2) # position in m (actually, in px, a problem, since it should be in m)
 		@kg = MIN_MASS_KG # mass in kg
 		@_damping = MIN_DAMPING # damping coefficient (unitless)
@@ -129,10 +129,11 @@ class Entity extends $.EventEmitter
 	# adjust our position by this offset (with sanity checks)
 	translate: (dx...) ->
 		for i in [0...dx.length] by 1
-			if (not isFinite(dx[i])) or Math.abs(dx[i]) < .01
+			if (not isFinite dx[i]) or (Math.abs dx[i]) < .01
 				dx[i] = 0
 		if dx[0] isnt 0 or dx[1] isnt 0
-			@x = @x.plus(dx)
+			@x = @x.plus dx
+			Entity.removeFromCache @
 		@
 
 	# run one frame for just this object
@@ -162,7 +163,7 @@ class Entity extends $.EventEmitter
 		# use collision to initiate grappling
 		if $.isType FootballPlayer, @
 			# add forces from people grappling onto us
-			if @grapple.by
+			if @grapple.by?
 				@fullStop()
 				@attemptBreakGrapple()
 			else if not @hasBall
@@ -178,10 +179,7 @@ class Entity extends $.EventEmitter
 
 		# Apply accel->velocity->position using vertlet integration:
 		# 1. adjust the position based on current velocity plus some part of the acceleration
-		motion = @v.scale(dts).plus(@a.scale(.5 * dts * dts))
-		@translate motion...
-		if motion.magnitude() > 0
-			Entity.removeFromCache(@)
+		@translate @v.scale(dts).plus(@a.scale(.5 * dts * dts))...
 		# 2. compute the new acceleration from total force
 		new_acceleration = total_force.scale(1/@kg)
 		# 3. adjust velocity based on two-frame average acceleration
@@ -264,12 +262,13 @@ class window.FootballPlayer extends Circle
 	toggleHighlight: ->
 		@highlight = not @highlighted
 	attemptGrapple: (other) ->
+		# $.log @guid, 'grappling', other.guid
 		@grapple.ing = other
 		other.grapple.by = @
 	attemptBreakGrapple: ->
-		@translate $.random.integer(0,1*yard), $.random.integer(0,1*yard)
 		@grapple.by.grapple.ing = null
 		@grapple.by = null
+		@translate $.random.integer(-1,2), $.random.integer(-1,2)
 		
 	draw: (ctx) ->
 		super ctx
