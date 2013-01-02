@@ -341,7 +341,7 @@ class window.FootballPlayer extends Circle
 			b = @ball
 			b.prevOwner = @
 			@ball = b.owner = null
-			$.delay 100, -> b.prevOwner = null
+			$.delay 300, -> b.prevOwner = null
 	
 	drawHighlight: (ctx) ->
 		ctx.beginPath()
