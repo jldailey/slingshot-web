@@ -11,6 +11,7 @@ h = Math.max(body.scrollHeight, body.clientHeight)
 w = h / aspect_ratio
 PLAYER_RADIUS = w/48
 BALL_RADIUS = w/90
+MOVES_PER_TURN = 2
 
 # w and h are the real-pixel heights of the canvas
 # we also need a conversion from pixels to yards and back
@@ -341,7 +342,7 @@ class window.FootballPlayer extends Circle
 			b = @ball
 			b.prevOwner = @
 			@ball = b.owner = null
-			$.delay 300, -> b.prevOwner = null
+			$.delay 1000, -> b.prevOwner = null
 	
 	drawHighlight: (ctx) ->
 		ctx.beginPath()
@@ -390,12 +391,12 @@ gameBall = new Football().position(w/2,h/2)
 
 Formations =
 	defense:
-		"4-3":
+		"base":
 			positions: [
-				[-5, -10], [5, -10], # FS + SS
-				[-9, -2.5], [9, -2.5], # CB x 2
-				[-4, -4.5], [0, -4.5], [4, -4.5], # LB x 3
-				[-3, -1.5], [-1, -1.5], [1, -1.5], [3, -1.5], # DL x 4
+				[0, -10], # Safety
+				[-7, -2.5], [7, -2.5], # CB
+				[-2, -4.5], [2, -4.5], # LB
+				[-3, -1.5], [-1, -1.5], [1, -1.5], [3, -1.5], # DL
 			]
 	offense:
 		"single-back":
@@ -416,7 +417,7 @@ spawnFormation = (x,y,formation, team) ->
 		objects[start + formation.ball].giveBall(gameBall)
 
 objects.push gameBall
-spawnFormation(w/2,h/1.5, Formations.defense["4-3"], 'red')
+spawnFormation(w/2,h/1.5, Formations.defense["base"], 'red')
 spawnFormation(w/2,h/1.5, Formations.offense["single-back"], 'blue')
 
 Event.position = (evt) ->
@@ -425,14 +426,20 @@ Event.position = (evt) ->
 MouseEvent::position = -> $ @offsetX, @offsetY
 TouchEvent::position = -> $ @touches[0].clientX, @touches[0].clientY
 
+turnCounter = MOVES_PER_TURN
 class ImpulseVector extends Entity
 	constructor: ->
 		super @
 		@reset()
+		teams = $.keysOf(Teams)
 		canvas.bind 'mousedown', (evt) =>
 			clock.start()
-			$.log '@dragTarget', @dragTarget = Circle.findAt(evt.position()...)
-			if @dragTarget
+			if target = Circle.findAt(evt.position()...)
+				whoseTurn = teams[Math.floor(turnCounter / MOVES_PER_TURN) % teams.length]
+				if $.isType(FootballPlayer, target) and target._team isnt whoseTurn
+					$.log 'not your turn',target._team,'isnt',whoseTurn
+					return
+				@dragTarget = target
 				@dragStart = @dragTarget.x
 				@dragEnd = @dragStart.slice()
 				@dragTarget.highlighted = true
@@ -440,7 +447,9 @@ class ImpulseVector extends Entity
 		canvas.bind 'touchcancel', (evt) =>
 			@dragTarget?.highlighted = false
 			@reset()
-		canvas.bind 'mouseup, mouseout', (evt) => @applyForce(); evt.preventAll()
+		canvas.bind 'mouseup, mouseout', (evt) =>
+			@applyForce()
+			evt.preventAll()
 		canvas.bind 'mousemove', (evt) =>
 			@dragEnd = evt.position()
 	reset: ->
@@ -458,6 +467,7 @@ class ImpulseVector extends Entity
 					@dragTarget.owner?.releaseBall()
 				if ok
 					@dragTarget.applyForce 100, delta...
+					turnCounter++
 				@dragTarget.highlighted = false
 			else clock.stop()
 		@reset()
