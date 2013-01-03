@@ -6,19 +6,24 @@ IMPULSE_FORCE_SCALE = 120
 PLAYER_DAMPING = 12
 PLAYER_MASS_KG = 100
 body = document.body
-aspect_ratio = 16 / 9
 h = Math.max(body.scrollHeight, body.clientHeight)
-w = h / aspect_ratio
-PLAYER_RADIUS = w/48
-BALL_RADIUS = w/90
-MOVES_PER_TURN = 2
-
+w = h * 9 / 16
 # w and h are the real-pixel heights of the canvas
 # we also need a conversion from pixels to yards and back
 # for now, we just assume that the play area is 40yds long
 yard = yards = h/40
 # so, (10*yards) is the number of pixels in 10 yards
 # and (10/yards) is the number of yards in 10 pixels
+PLAYER_RADIUS = .5*yard
+BALL_RADIUS = .5*yard
+MOVES_PER_TURN = 2
+turnCounter = MOVES_PER_TURN
+lineOfScrimmage = 20
+lineOfScrimmageX = w/2
+lineOfScrimmageY = h/1.5
+firstDownMarker = 30
+firstDownY = lineOfScrimmageY + (firstDownMarker - lineOfScrimmage * yards)
+
 
 
 # Create the canvas to draw on
@@ -227,6 +232,23 @@ class FootballField extends Rect
 		super @
 		@fill('green')
 			.damping(MAX_DAMPING)
+	draw: (ctx) ->
+		super ctx
+		ctx.beginPath()
+		fiveYards = 5 * yards
+		for y in [0...h] by (1*yards)
+			if y % fiveYards == 0
+				ctx.moveTo 0, y
+				ctx.lineTo w, y
+			else
+				ctx.moveTo w*.4,y
+				ctx.lineTo w*.44,y
+				ctx.moveTo w*.6,y
+				ctx.lineTo w*.64,y
+		ctx.strokeStyle = 'white'
+		ctx.stroke()
+		ctx.closePath()
+
 
 class Text extends Entity
 	text: (@_text) -> @
@@ -272,25 +294,21 @@ class window.Football extends Circle
 		if @owner?
 			x = @owner.x
 			if @x.minus(x).magnitude() > 2
-				r = @r*1.5
+				r = @r*.9
 				@position x.plus([r,r])...
 		else
 			super dt
 	draw: (ctx) ->
 		ctx.beginPath()
-		end = -Math.PI
-		if @owner?
-			end = -Math.PI/2
-		ctx.arc 0,0, @r, Math.PI, end, true
-		ctx.lineWidth = @r*2
-		ctx.strokeStyle = 'brown'
-		ctx.stroke()
+		ctx.arc 0,0, @r, 0, Math.PI*2, true
+		ctx.fillStyle = 'brown'
+		ctx.fill()
 		ctx.closePath()
 
 		ctx.beginPath()
-		y = -@r*.5
-		ctx.moveTo @r, y
-		ctx.lineTo y, @r
+		y = -@r*.25
+		ctx.moveTo @r/2, y
+		ctx.lineTo y, @r/2
 		ctx.lineWidth = w >>> 8
 		ctx.strokeStyle = 'white'
 		ctx.stroke()
@@ -298,7 +316,7 @@ class window.Football extends Circle
 
 		if @highlighted
 			ctx.beginPath()
-			ctx.arc 0,0,@r, Math.PI, end, true
+			ctx.arc 0,0,@r, 0, Math.PI*2, true
 			ctx.strokeStyle = 'yellow'
 			unless @owner?
 				ctx.strokeStyle = 'red'
@@ -417,8 +435,8 @@ spawnFormation = (x,y,formation, team) ->
 		objects[start + formation.ball].giveBall(gameBall)
 
 objects.push gameBall
-spawnFormation(w/2,h/1.5, Formations.defense["base"], 'red')
-spawnFormation(w/2,h/1.5, Formations.offense["single-back"], 'blue')
+spawnFormation(lineOfScrimmageX,lineOfScrimmageY, Formations.defense["base"], 'red')
+spawnFormation(lineOfScrimmageX,lineOfScrimmageY, Formations.offense["single-back"], 'blue')
 
 Event.position = (evt) ->
 	$ evt.offsetX, evt.offsetY
@@ -426,7 +444,6 @@ Event.position = (evt) ->
 MouseEvent::position = -> $ @offsetX, @offsetY
 TouchEvent::position = -> $ @touches[0].clientX, @touches[0].clientY
 
-turnCounter = MOVES_PER_TURN
 class ImpulseVector extends Entity
 	constructor: ->
 		super @
