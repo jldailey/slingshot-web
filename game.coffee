@@ -88,29 +88,51 @@ class Entity extends $.EventEmitter
 	@clearCaches = ->
 		distance_cache = Object.create null
 	@removeFromCache = (ent) ->
+		return unless ('guid' of ent and ent.guid of distance_cache)
+		for k,v of distance_cache[ent.guid]
+			delete v[ent.guid]
 		delete distance_cache[ent.guid]
-		for k of distance_cache
-			delete distance_cache[k][ent.guid]
 
 	# property functions:
-	fill: (@_fill) -> @
-	stroke: (@_stroke) -> @
+	fill: (f) -> @style.fill = f; @
+	stroke: (s) -> @style.stroke = s; @
 	mass: (kg) -> @kg = Math.max(MIN_MASS_KG,kg); @
-	damping: (c) -> @_damping = Math.min(MAX_DAMPING, Math.max(MIN_DAMPING, c)); @
-	position: (x...) -> @x = $ x; @
+	damping: (c) ->
+		@pos.damping = Math.min MAX_DAMPING, Math.max MIN_DAMPING, c
+		@
+	rotdamping: (c) ->
+		@rot.damping = Math.min MAX_DAMPING, Math.max MIN_DAMPING, c
+		@
+	position: (x...) -> @pos.x = $ x; @
 
 	constructor: ->
 		@guid = $.random.string 8
-		@x = $.zeros(2) # position in m (actually, in px, a problem, since it should be in m)
+		@style =
+			fill: null
+			stroke: null
+		@size = # describes a bounding box/circle
+			w: 0 # width
+			h: 0 # height
+			r: 0 # radius
+		@pos =
+			x: $.zeros(2) # position in m (actually, in px, a problem, since it should be in m)
 		@kg = MIN_MASS_KG # mass in kg
-		@_damping = MIN_DAMPING # damping coefficient (unitless)
 		@fullStop()
 	
 	# come to a complete and instant stop
 	fullStop: ->
-		@a = $.zeros(2) # acceleration in m/s^2
-		@v = $.zeros(2) # velocity in m/s
+		@rot =
+			x: 0
+			v: 0
+			a: 0
+			damping: 0
+		@pos =
+			x: @pos.x
+			v: $.zeros(@pos.x.length)
+			a: $.zeros(@pos.x.length)
+			damping: MIN_DAMPING
 		@forces = Object.create null # the set of (temporary) forces on this object
+		@torques = Object.create null
 
 	# get the distance between objects, using caching
 	# suitable for use in [collision] loops in a single frame
@@ -123,19 +145,21 @@ class Entity extends $.EventEmitter
 			return distance_cache[b][a]
 		distance_cache[a] or= Object.create null
 		distance_cache[b] or= Object.create null
-		distance_cache[a][b] = distance_cache[b][a] = @x.minus(entB.x).magnitude()
+		distance_cache[a][b] = distance_cache[b][a] = @pos.x.minus(entB.pos.x).magnitude()
 	
 	# applies a temporary force to this entity
 	applyForce: (duration, x...) ->
-		$.log "applying force: #{x} for duration: #{duration}"
-		expires = $.now + duration
-		(@forces[expires] or= []).push x
+		if x.length is 1 and $.type(x[0]) in ['array','bling']
+			x = x[0]
+		(@forces[$.now + duration] or= []).push x
 
 	# applies a force function to this entity
 	# the force function receives the entity to be forced, and returns a force vector
 	applyDynamicForce: (duration, f) ->
-		expires = $.now + duration
-		(@forces[expires] or= []).push f
+		(@forces[$.now + duration] or= []).push f
+	
+	applyTorque: (duration, t) ->
+		(@torques[$.now + duration] or= []).push t
 
 	# adjust our position by this offset (with sanity checks)
 	translate: (dx...) ->
@@ -143,18 +167,16 @@ class Entity extends $.EventEmitter
 			if (not isFinite dx[i]) # or (Math.abs dx[i]) < .0001
 				dx[i] = 0
 		if dx[0] isnt 0 or dx[1] isnt 0
-			@x = @x.plus dx
+			@pos.x = @pos.x.plus dx
 			Entity.removeFromCache @
 		@
-
-	# run one frame for just this object
-	tick: (dt) ->
-		dts = dt/1000 # convert time to seconds; so physics works in m/s
-		now = $.now
-
-		# Add up all the forces on this object
+	
+	rotation: (angle) -> @rot.x = angle; @
+	rotate: (angle) -> @rot.x += angle; @
+	
+	getTotalForce: ->
 		total_force = $.zeros(2)
-
+		now = $.now
 		# Temporary forces are organized by expiration time
 		for expires,forces of @forces
 			# if they are expired, just clean them out
@@ -169,7 +191,30 @@ class Entity extends $.EventEmitter
 					else ($.log 'invalid force', force; [0,0])
 
 		# always include the damping force
-		total_force = total_force.plus @v.scale(-@_damping)
+		total_force = total_force.plus @pos.v.scale(-@pos.damping)
+
+	getTotalTorque: ->
+		total_torque = 0
+		now = $.now
+		for expires, torques in @torques
+			if now >= expires
+				delete @torques[expires]
+				continue
+			for torque in torques
+				total_torque += switch $.type torque
+					when 'number' then torque
+					when 'function' then torque(@)
+					else ($.log 'invalid torque', torque; 0)
+		total_torque += @rot.v * -@rot.damping
+		
+
+	# run one frame for just this object
+	tick: (dt) ->
+		dts = dt/1000 # convert time to seconds; so physics works in m/s
+
+		# Add up all the forces on this object
+		total_force = @getTotalForce()
+		total_torque = @getTotalTorque()
 
 		# use collision to:
 		#  * initiate grappling
@@ -183,47 +228,48 @@ class Entity extends $.EventEmitter
 				for obj in objects
 					if $.isType Football, obj
 						continue if obj.owner?
-						d = @getDistance(obj)
-						r = @r + obj.r
-						if d < r
+						if @overlaps(obj)
 							@giveBall(obj)
 					if $.isType FootballPlayer, obj
 						continue if obj.guid is @guid
-						continue if obj._team is @_team
-						d = @getDistance(obj)
-						r = @r + obj.r
-						if d < r
+						continue if obj.jersey.team is @jersey.team
+						if @overlaps(obj)
 							@attemptGrapple(obj)
 							total_force = $.zeros(2)
 
-		# Apply accel->velocity->position using vertlet integration:
-		# 1. adjust the position based on current velocity plus some part of the acceleration
-		@translate @v.scale(dts).plus(@a.scale(.5 * dts * dts))...
+		# Adjust position (x,a,v) using vertlet integration:
+		# 1. adjust the position based on current velocity plus some of the acceleration
+		@translate @pos.v.scale(dts).plus(@pos.a.scale(.5 * dts * dts))...
 		# 2. compute the new acceleration from total force
 		new_acceleration = total_force.scale(1/@kg)
 		# 3. adjust velocity based on two-frame average acceleration
-		@v = @v.plus(new_acceleration.plus(@a).scale(.5))
+		@pos.v = @pos.v.plus(new_acceleration.plus(@pos.a).scale(.5))
 		# 4. record acceleration for averaging
-		@a = new_acceleration
+		@pos.a = new_acceleration
+
+		# Adjust our rotation angle the same basic way
+		@rotate (@rot.v * dts) + (@rot.a * .5 * dts * dts)
+		new_acceleration = total_torque * 1 / @kg
+		@rot.v += (new_acceleration + @rot.a) / 2
+		@rot.a = new_acceleration
 
 	preDraw: (ctx) ->
-		ctx.translate @x...
-		if @facing then ctx.rotate @facing
-		if @_fill then ctx.fillStyle = @_fill
-		if @_stroke then ctx.strokeStyle = @_stroke
+		ctx.translate @pos.x...
+		if @rot.x then ctx.rotate @rot.x
+		if @style.fill then ctx.fillStyle = @style.fill
+		if @style.stroke then ctx.strokeStyle = @style.stroke
 	draw: (ctx) ->
-		if @_fill then ctx.fill()
-		if @_stroke then ctx.stroke()
+		if @style.fill then ctx.fill()
+		if @style.stroke then ctx.stroke()
 
 class Rect extends Entity
 	constructor: ->
 		super @
-		@w = @h = 0
-	size: (@w, @h) -> @
-	area: -> @w * @h
+	bounds: (w,h) -> @size = { w, h, r: Math.max(w,h)/2 }; @
+	area: -> @size.w * @size.h
 	draw: (ctx) ->
 		ctx.beginPath()
-		ctx.rect 0,0,@w,@h
+		ctx.rect 0,0,@size.w, @size.h
 		ctx.closePath()
 		super ctx
 
@@ -251,30 +297,33 @@ class FootballField extends Rect
 
 
 class Text extends Entity
-	text: (@_text) -> @
-	font: (@_font) -> @
-	textAlign: (@_textAlign) -> @
+	text: (t) -> @style.text = t; @
+	font: (f) -> @style.font = f; @
+	textAlign: (a) -> @style.textAlign = a; @
 	draw: (ctx) ->
-		if @_font then ctx.font = @_font
-		if @_textAlign then ctx.textAlign = @_textAlign
-		if @_fill then ctx.fillText @_text, @x...
-		if @_stroke then ctx.strokeText @_stroke, @x...
+		if @style.font then ctx.font = @style.font
+		if @style.textAlign then ctx.textAlign = @style.textAlign
+		if @style.fill then ctx.fillText @style.text, @pos.x...
+		if @style.stroke then ctx.strokeText @style.stroke, @pos.x...
 		super ctx
 
 class window.Circle extends Entity
 	instances = $()
 	@get = (i) -> instances[i]
 	@findAt = (x...) ->
-		instances.filter((-> @x.minus(x).magnitude() < @r), 1).first()
+		instances.filter((-> $.log @size.r; @pos.x.minus(x).magnitude() < @size.r), 1).first()
 	constructor: ->
 		super @
 		instances.push @
-		@r = 0
-	radius: (@r) -> @
-	area: -> Math.PI * @r * @r
+		@size.r = 0
+	radius: (r) -> @size.r = r; @
+	area: -> Math.PI * @size.r * @size.r
+	overlaps: (circleB) ->
+		d = @getDistance circleB
+		return d < (@size.r + circleB.r)
 	draw: (ctx) ->
 		ctx.beginPath()
-		ctx.arc 0, 0, @r, 0, Math.PI*2, true
+		ctx.arc 0, 0, @size.r, 0, Math.PI*2, true
 		ctx.closePath()
 		super ctx
 
@@ -292,23 +341,24 @@ class window.Football extends Circle
 			.mass(PLAYER_MASS_KG)
 	tick: (dt) ->
 		if @owner?
-			x = @owner.x
-			if @x.minus(x).magnitude() > 2
-				r = @r*.9
+			x = @owner.pos.x
+			if @pos.x.minus(x).magnitude() > 2
+				r = @size.r*.9
 				@position x.plus([r,r])...
 		else
 			super dt
 	draw: (ctx) ->
+		r = @size.r
 		ctx.beginPath()
-		ctx.arc 0,0, @r, 0, Math.PI*2, true
+		ctx.arc 0,0, r, 0, Math.PI*2, true
 		ctx.fillStyle = 'brown'
 		ctx.fill()
 		ctx.closePath()
 
 		ctx.beginPath()
-		y = -@r*.25
-		ctx.moveTo @r/2, y
-		ctx.lineTo y, @r/2
+		y = -r*.25
+		ctx.moveTo r/2, y
+		ctx.lineTo y, r/2
 		ctx.lineWidth = w >>> 8
 		ctx.strokeStyle = 'white'
 		ctx.stroke()
@@ -316,7 +366,7 @@ class window.Football extends Circle
 
 		if @highlighted
 			ctx.beginPath()
-			ctx.arc 0,0,@r, 0, Math.PI*2, true
+			ctx.arc 0,0,r, 0, Math.PI*2, true
 			ctx.strokeStyle = 'yellow'
 			unless @owner?
 				ctx.strokeStyle = 'red'
@@ -326,14 +376,20 @@ class window.Football extends Circle
 
 	
 class window.FootballPlayer extends Circle
-	team: (@_team) -> Teams[@_team]?.call @; @
+	team: (t) ->
+		@jersey.team = t
+		Teams[t]?.call @
+		@
 	constructor: (team) ->
 		super @
+		@jersey =
+			number: "00"
+			name: "John Smith"
+			team: null
 		@highlighted = false
 		@grapple =
-			by: null
-			ing: null
-		@number = $.random.integer 1,99
+			by: null # who am I grappled by
+			ing: null # who am I grappling
 		@damping(PLAYER_DAMPING)
 			.mass(PLAYER_MASS_KG)
 			.radius(PLAYER_RADIUS)
@@ -341,12 +397,11 @@ class window.FootballPlayer extends Circle
 	toggleHighlight: ->
 		@highlight = not @highlighted
 	attemptGrapple: (other) ->
-		# $.log @guid, 'grappling', other.guid
 		@grapple.ing = other
 		other.grapple.by = @
 	attemptBreakGrapple: ->
-		dx = @x.minus(@grapple.by.x)
-		gap = dx.magnitude() - (@r + @grapple.by.r)
+		dx = @pos.x.minus(@grapple.by.pos.x)
+		gap = dx.magnitude() - (@size.r + @grapple.by.size.r)
 		@grapple.by.grapple.ing = null
 		@grapple.by = null
 		if gap < 0
@@ -360,11 +415,13 @@ class window.FootballPlayer extends Circle
 			b = @ball
 			b.prevOwner = @
 			@ball = b.owner = null
-			$.delay 1000, -> b.prevOwner = null
+			$.delay 500, =>
+				if b.prevOwner is @ # unless it changed since we were scheduled
+					b.prevOwner = null # clear off our previous ownership
 	
 	drawHighlight: (ctx) ->
 		ctx.beginPath()
-		ctx.arc 0, 0, @r, 0, Math.PI*2, true
+		ctx.arc 0, 0, @size.r, 0, Math.PI*2, true
 		ctx.lineWidth = w/256
 		ctx.strokeStyle = 'yellow'
 		ctx.stroke()
@@ -374,11 +431,11 @@ class window.FootballPlayer extends Circle
 		ctx.textAlign = 'center'
 		ctx.fillStyle = 'white'
 		ctx.font = "#{$.px .66*yards} courier"
-		ctx.fillText @number, 0,@r/2
+		ctx.fillText @jersey.number, 0,@size.r/2
 	
 	drawBall: (ctx) ->
 		ctx.beginPath()
-		ctx.arc 0,0, @r, 0, Math.PI*2, true
+		ctx.arc 0,0, @size.r, 0, Math.PI*2, true
 		ctx.strokeStyle = 'brown'
 		ctx.lineWidth = w/256
 		ctx.stroke()
@@ -395,6 +452,8 @@ window.clock = new Clock()
 clock.on 'tick', (dt) ->
 	# Entity.clearCaches()
 	for obj in objects
+		if not (typeof obj.tick is 'function')
+			$.log 'invalid object (no tick):', obj
 		obj.tick(dt)
 	for obj in objects
 		context.each ->
@@ -404,7 +463,7 @@ clock.on 'tick', (dt) ->
 			@restore()
 clock.on 'started', -> $.log 'started'
 clock.on 'stopped', -> $.log 'stopped'
-objects.push new FootballField().position(0,0).size(w,h)
+objects.push new FootballField().position(0,0).bounds(w,h)
 gameBall = new Football().position(w/2,h/2)
 
 Formations =
@@ -438,9 +497,6 @@ objects.push gameBall
 spawnFormation(lineOfScrimmageX,lineOfScrimmageY, Formations.defense["base"], 'red')
 spawnFormation(lineOfScrimmageX,lineOfScrimmageY, Formations.offense["single-back"], 'blue')
 
-Event.position = (evt) ->
-	$ evt.offsetX, evt.offsetY
-
 MouseEvent::position = -> $ @offsetX, @offsetY
 TouchEvent::position = -> $ @touches[0].clientX, @touches[0].clientY
 
@@ -453,11 +509,11 @@ class ImpulseVector extends Entity
 			clock.start()
 			if target = Circle.findAt(evt.position()...)
 				whoseTurn = teams[Math.floor(turnCounter / MOVES_PER_TURN) % teams.length]
-				if $.isType(FootballPlayer, target) and target._team isnt whoseTurn
-					$.log 'not your turn',target._team,'isnt',whoseTurn
+				if $.isType(FootballPlayer, target) and target.jersey.team isnt whoseTurn
+					$.log 'not your turn',target.jersey.team,'isnt',whoseTurn
 					return
 				@dragTarget = target
-				@dragStart = @dragTarget.x
+				@dragStart = @dragTarget.pos.x
 				@dragEnd = @dragStart.slice()
 				@dragTarget.highlighted = true
 			evt.preventAll()
@@ -491,7 +547,7 @@ class ImpulseVector extends Entity
 
 	draw: (ctx) ->
 		if @dragTarget and @dragEnd
-			target = @dragTarget.x
+			target = @dragTarget.pos.x
 			ctx.translate 0,0
 			ctx.beginPath()
 			ctx.moveTo target...
