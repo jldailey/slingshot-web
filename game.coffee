@@ -1,9 +1,36 @@
 
+# Interesting fact, an average lineman can apply about 16 Joules of force when bench pressing.
+# This is my back of the envelope calculation based on benching 450 lbs (moving it 1 meter in 5 seconds).
+# The strongest lineman I could find a number for, pressed 600 lbs, which is 24 J.
+MIN_PLAYER_FORCE = 8 # Joules
+MAX_PLAYER_FORCE = 24 # J
+PLAYER_FORCE_DISTRIBUTION = [16, 2]
+
+toKg = (lb) -> lb * 0.453592
+toPounds = (kg) -> kg * 2.20462
+
+# The smallest mass that the physics engine will deal with (avoiding divide by zero edge cases)
 MIN_MASS_KG = 0.0001
-MIN_DAMPING = 0.001
-MAX_DAMPING = 99999999999999
+
+weightTable =
+	# each row is [mean, ssig] for the weight distribution of that position
+	QB: [toKg(250), toKg(25)]
+	HB: [toKg(280), toKg(25)]
+	FB: [toKg(290), toKg(25)]
+	WR: [toKg(220), toKg(25)]
+	OL: [toKg(320), toKg(10)]
+
+
+MEAN_PLAYER_KG = toKg(180)
+MAX_PLAYER_KG = toKg(320)
+randomPlayerWeight = -> $.random.gaussian
+
+MIN_DRAG = 0.001
+MAX_DRAG = 99999999999999
+
 IMPULSE_FORCE_SCALE = 120
-PLAYER_DAMPING = 12
+IMPULSE_TIME_SCALE = 100
+PLAYER_DRAG = 12
 PLAYER_MASS_KG = 100
 body = document.body
 h = Math.max(body.scrollHeight, body.clientHeight)
@@ -23,18 +50,25 @@ lineOfScrimmageX = w/2
 lineOfScrimmageY = h/1.5
 firstDownMarker = 30
 firstDownY = lineOfScrimmageY + (firstDownMarker - lineOfScrimmage * yards)
-$.log = $.throttle 50, $.log
+gameField = null # created later
+gameBall = null # created later
+# $.log = $.throttle 50, $.log
 $.log 'configured'
 
 # This is the set of game objects (things that will tick and render in every frame)
 window.objects = []
-# This clock drives the game loop, emitting a 'tick' event at 60fps.
+window.active = [] # the subset of objects that will tick() every frame
+window.visible = [] # the subset of objects that will draw() every frame
+
+# This clock drives the game loop.
 window.clock = new Clock()
-clock.on 'tick', (dt) -> # This is the cental game loop
-	# First, we call .tick() on every object so it can update state (position, etc)
-	for obj in objects
+# It emits a 'tick' event at as close to 60 fps as it can.
+clock.on 'tick', (dt) ->
+	# This is the cental game loop:
+	# First, we call .tick() on active objects so they can update state (position, etc)
+	for obj in active
 		obj.tick(dt)
-	# Second, we draw every item in every context.
+	# Second, we draw visible items in every context.
 	for obj in objects
 		context.each ->
 			@save()
@@ -63,47 +97,32 @@ context = canvas.select('getContext').call('2d')
 
 $.log 'context created'
 
-# Draw a placeholder splash sequence
+# Draw a placeholder splash screen
 context.each ->
 	fillMultiLineText = (interval, lines...) =>
 		for i in [0...lines.length] by 1
 			@fillText lines[i], w/2, interval * (i+1)
 
-	textIndex = 0
-	texts = [
-		" READY TO PLAY?".split(' ')
-		" CLICK TO START!".split(' ')
-	]
-	drawText = =>
-		@fillStyle = 'black'
-		@fillRect 0,0,w,h
-		@fillStyle = 'white'
-		@textAlign = 'center'
-		@font = "#{$.px w/4} courier"
-		fillMultiLineText h/5, texts[textIndex++]...
-		# if textIndex < texts.length then setTimeout drawBolt, 1000
+	@fillStyle = 'black'
+	@fillRect 0,0,w,h
+	@fillStyle = 'white'
+	@textAlign = 'center'
+	@font = "#{$.px w/4} courier"
+	fillMultiLineText h/5, " CLICK TO START".split(' ')...
 
-	drawBolt = =>
-		@beginPath()
-		@moveTo w*.6, 0
-		@lineTo w*.4, h*.6
-		@lineTo w*.5, h*.66
-		@lineTo w*.3, h
-		@lineTo w*.6, h*.66
-		@lineTo w*.5, h*.6
-		@lineTo w*.7, 0
-		@closePath()
-		@fillStyle = 'white'
-		@fill()
-		setTimeout drawText, 100
+$.log "splash screen drawn"
 
-	drawFlash = =>
-		@fillStyle = 'white'
-		@fillRect 0,0,w,h
-		setTimeout drawText, 100
+# Magic token that ends a dynamic force
+class EndOfForce extends Error
 
-	drawText()
-
+window.dynamicGrapplingForce = (entB, maxRange=10.0) ->
+	(entA) ->
+		dx = entA.pos.x.minus(entB.pos.x)
+		d = dx.magnitude()
+		if d > maxRange
+			throw new EndOfForce()
+		else
+			return d.scale(IMPULSE_FORCE_SCALE)
 
 # Entity is the base class for all world objects; it handles physics, etc.
 class Entity extends $.EventEmitter
@@ -111,20 +130,37 @@ class Entity extends $.EventEmitter
 	@clearCaches = ->
 		distance_cache = Object.create null
 	@removeFromCache = (ent) ->
-		return unless ('guid' of ent and ent.guid of distance_cache)
+		unless ('guid' of ent and ent.guid of distance_cache)
+			$.log "not removing #{ent.guid} from distance_cache (not present)"
+			return
 		for k,v of distance_cache[ent.guid]
 			delete v[ent.guid]
 		delete distance_cache[ent.guid]
+	
+	inactive: ->
+		if (i = active.indexOf @) > -1
+			active.splice i, 1
+		@
+	active: ->
+		active.push @inactive()
+		@
+	invisible: ->
+		if (i = visible.indexOf @) > -1
+			visible.splice i, 1
+		@
+	visible: ->
+		visible.push @invisible()
+		@
 
 	# property functions:
 	fill: (f) -> @style.fill = f; @
 	stroke: (s) -> @style.stroke = s; @
 	mass: (kg) -> @kg = Math.max(MIN_MASS_KG,kg); @
-	damping: (c) ->
-		@pos.damping = Math.min MAX_DAMPING, Math.max MIN_DAMPING, c
+	drag: (c) ->
+		@pos.drag = Math.min MAX_DRAG, Math.max MIN_DRAG, c
 		@
-	rotdamping: (c) ->
-		@rot.damping = Math.min MAX_DAMPING, Math.max MIN_DAMPING, c
+	rotdrag: (c) ->
+		@rot.drag = Math.min MAX_DRAG, Math.max MIN_DRAG, c
 		@
 	position: (x...) -> @pos.x = $ x; @
 
@@ -139,23 +175,33 @@ class Entity extends $.EventEmitter
 			r: 0 # radius
 		@pos =
 			x: $.zeros(2) # position in m (actually, in px, a problem, since it should be in m)
+		@rot =
+			x: 0
 		@kg = MIN_MASS_KG # mass in kg
 		@fullStop()
+		objects.push @
+		active.push @
+		visible.push @
 
 	# come to a complete and instant stop
 	fullStop: ->
-		@rot =
-			x: 0
-			v: 0
-			a: 0
-			damping: MIN_DAMPING
-		@pos =
-			x: @pos.x
-			v: $.zeros(@pos.x.length)
-			a: $.zeros(@pos.x.length)
-			damping: MIN_DAMPING
+		@pos = x: @pos.x # preserve our current position
+			v: $.zeros(@pos.x.length) # reset velocity
+			a: $.zeros(@pos.x.length) # reset acceleration
+			drag: MIN_DRAG
+		@rot = x: @rot.x # preserve rotation
+			v: 0 # reset angular velocity
+			a: 0 # reset angular acceleration
+			drag: MIN_DRAG
 		@forces = Object.create null # the set of (temporary) forces on this object
 		@torques = Object.create null
+	
+	momentum: ->
+		@kg * @pos.v.magnitude()
+	
+	kineticEnergy: ->
+		v = @pos.v.magnitude()
+		.5 * @kg * v * v
 
 	# get the distance between objects, using caching
 	# suitable for use in [collision] loops in a single frame
@@ -164,8 +210,6 @@ class Entity extends $.EventEmitter
 		b = entB.guid
 		if a of distance_cache and b of distance_cache[a]
 			return distance_cache[a][b]
-		if b of distance_cache and a of distance_cache[b]
-			return distance_cache[b][a]
 		distance_cache[a] or= Object.create null
 		distance_cache[b] or= Object.create null
 		distance_cache[a][b] = distance_cache[b][a] = @pos.x.minus(entB.pos.x).magnitude()
@@ -174,16 +218,18 @@ class Entity extends $.EventEmitter
 	applyForce: (duration, x...) ->
 		if x.length is 1 and $.type(x[0]) in ['array','bling']
 			x = x[0]
-		(@forces[$.now + duration] or= []).push x
+		$.log 'applying force', x, 'for', duration, 'ms'
+		(@active().forces[$.now + duration] or= []).push x
 
 	# applies a force function to this entity
 	# the force function receives the entity to be forced, and returns a force vector
 	applyDynamicForce: (duration, f) ->
-		(@forces[$.now + duration] or= []).push f
+		$.log 'applying dynamic force for ', duration, 'ms'
+		(@active().forces[$.now + duration] or= []).push f
 
 	applyTorque: (duration, t) ->
 		$.log 'applying torque', t, 'for', duration
-		(@torques[$.now + duration] or= []).push t
+		(@active().torques[$.now + duration] or= []).push t
 
 	# adjust our position by this offset (with sanity checks)
 	translate: (dx...) ->
@@ -212,14 +258,22 @@ class Entity extends $.EventEmitter
 				delete @forces[expires]
 				continue
 			# otherwise, add up all the forces in this time bucket
-			for force in forces
-				total_force = total_force.plus switch $.type force
-					when 'bling','array' then force
-					when 'function' then force(@)
-					else ($.log 'invalid force', force; [0,0])
+			for i in [0...forces.length] by 1
+				force = forces[i]
+				try
+					total_force = total_force.plus switch $.type force
+						when 'bling','array' then force
+						when 'function' then force(@)
+						else ($.log 'invalid force', force; [0,0])
+				catch e
+					$.log 'force failed:', force, ' error:', e
+					forces.splice i, 1
+					i -= 1
 
-		# always include the damping force
-		total_force = total_force.plus @pos.v.scale(-@pos.damping)
+		# always include the drag force
+		total_force = total_force.plus @pos.v.scale(-@pos.drag)
+
+		return total_force
 
 	getTotalTorque: ->
 		total_torque = 0
@@ -239,58 +293,25 @@ class Entity extends $.EventEmitter
 		if not isFinite(@rot.v)
 			$.log "V rotted"
 			@rot.v = 0
-		if not isFinite(@rot.damping)
-			$.log "DAMPING rotted"
-			@rot.damping = MIN_DAMPING
-		damping = @rot.v * -@rot.damping
-		if damping isnt 0
-			$.log 'torque decay', damping
-		total_torque += @rot.v * -@rot.damping * @rot.damping
+		if not isFinite(@rot.drag)
+			$.log "DRAG rotted"
+			@rot.drag = MIN_DRAG
+		drag = @rot.v * -@rot.drag
+		if drag isnt 0
+			$.log 'torque decay', drag
+		total_torque += @rot.v * -@rot.drag * @rot.drag
 	
-	doCollision: (total_force) ->
-		# use collision to:
-		#  * initiate grappling
-		#  * pick up loose balls
-		if $.isType FootballPlayer, @
-			# add forces from people grappling onto us
-			if @grapple.by?
-				@fullStop()
-				@attemptBreakGrapple()
-			# TODO: keep tugging 
-			# else if @grapple.ing?
-			else if not @hasBall
-				for obj in objects
-					# check the football
-					if $.isType Football, obj
-						unless obj.owner? # if the ball is not owned
-							if @overlaps(obj) # and we are touching it
-								@giveBall(obj) # take it
-					# check other players
-					if $.isType FootballPlayer, obj
-						# skip ourselves
-						continue if obj.guid is @guid
-						# skip (for now) people on our own team
-						continue if obj.jersey.team is @jersey.team
-						# if we are touching this other player
-						if @overlaps(obj)
-							# grapple them
-							@attemptGrapple(obj)
-							total_force = $.zeros(2)
-		return total_force
-	
+	# Adjust position (x,a,v) using vertlet integration:
 	adjustPosition: (total_force, dt) ->
-		# Adjust position (x,a,v) using vertlet integration:
-		# 1. adjust the position based on current velocity plus some of the acceleration
-		@translate @pos.v.scale(dt).plus(@pos.a.scale(.5 * dt * dt))...
-		# 2. compute the new acceleration from total force
-		new_acceleration = total_force.scale(1/@kg)
-		# 3. adjust velocity based on two-frame average acceleration
-		@pos.v = @pos.v.plus(new_acceleration.plus(@pos.a).scale(.5))
-		# 4. record acceleration for averaging
-		@pos.a = new_acceleration
+		@translate @pos.v.scale(dt).plus(@pos.a.scale(.5 * dt * dt))...  # 1. adjust the position based on current velocity plus some of the acceleration
+		new_acceleration = total_force.scale(1/@kg) # 2. compute the new acceleration from total force
+		@pos.v = @pos.v.plus(new_acceleration.plus(@pos.a).scale(.5)) # 3. adjust velocity based on two-frame average acceleration
+		@pos.a = new_acceleration # 4. record acceleration for averaging
+		if @pos.v.magnitude() is 0
+			@inactive()
 
+	# Adjust our rotation angle using a one-dimensional version of adjustPosition
 	adjustRotation: (total_torque, dt) ->
-		# Adjust our rotation angle the same basic way
 		@rotate (@rot.v * dt) + (@rot.a * .5 * dt * dt)
 		new_acceleration = total_torque * 1 / @kg
 		# if new_acceleration isnt 0 then $.log 'new_acceleration', new_acceleration
@@ -303,13 +324,10 @@ class Entity extends $.EventEmitter
 
 		# Add up all the forces on this object
 		total_force = @getTotalForce()
-		total_torque = @getTotalTorque()
-		# if total_torque isnt 0 then $.log 'total_torque', total_torque
-
-		total_force = @doCollision(total_force)
+		# total_torque = @getTotalTorque()
 
 		@adjustPosition total_force, dts
-		@adjustRotation total_torque, dts
+		# @adjustRotation total_torque, dts
 
 
 	preDraw: (ctx) ->
@@ -336,7 +354,7 @@ class FootballField extends Rect
 	constructor: ->
 		super @
 		@fill('green')
-			.damping(MAX_DAMPING)
+			.drag(MAX_DRAG)
 	draw: (ctx) ->
 		super ctx
 		ctx.beginPath()
@@ -381,8 +399,7 @@ class window.Circle extends Entity
 	radius: (r) -> @size.r = r; @
 	area: -> Math.PI * @size.r * @size.r
 	overlaps: (circleB) ->
-		d = @getDistance circleB
-		return d < (@size.r + circleB.r)
+		@getDistance(circleB) < (@size.r + circleB.size.r)
 	draw: (ctx) ->
 		ctx.beginPath()
 		ctx.arc 0, 0, @size.r, 0, Math.PI*2, true
@@ -399,8 +416,8 @@ class window.Football extends Circle
 		@owner = null
 		@highlighted = false
 		@radius(BALL_RADIUS)
-			.damping(PLAYER_DAMPING)
-			.rotdamping(MAX_DAMPING)
+			.drag(PLAYER_DRAG)
+			.rotdrag(MAX_DRAG)
 			.mass(PLAYER_MASS_KG)
 	tick: (dt) ->
 		if @owner?
@@ -456,16 +473,19 @@ class window.FootballPlayer extends Circle
 		@grapple =
 			by: null # who am I grappled by
 			ing: null # who am I grappling
-		@damping(PLAYER_DAMPING)
+		@drag(PLAYER_DRAG)
 			.mass(PLAYER_MASS_KG)
 			.radius(PLAYER_RADIUS)
 			.team(team)
 	toggleHighlight: ->
 		@highlight = not @highlighted
+	
+
 	attemptGrapple: (other) ->
 		@grapple.ing = other
 		other.grapple.by = @
 	attemptBreakGrapple: ->
+		$.log 'attempting to break grapple'
 		dx = @pos.x.minus(@grapple.by.pos.x)
 		gap = dx.magnitude() - (@size.r + @grapple.by.size.r)
 		@grapple.by.grapple.ing = null
@@ -473,11 +493,17 @@ class window.FootballPlayer extends Circle
 		if gap < 0
 			delta = dx.normalize().scale(-gap).scale(1.05) #.scale($.random.real(.6,1.4))
 			@translate delta...
+	
+	# Become owner of the ball
 	giveBall: (ball) ->
+		$.log 'giving ball'
 		return if ball.prevOwner is @
 		(ball.owner = @).ball = ball
+
+	# Relinquish ownership of any ball we are carrying.
 	releaseBall: ->
 		if @ball?
+			$.log 'releasing ball'
 			b = @ball
 			b.prevOwner = @
 			@ball = b.owner = null
@@ -485,7 +511,7 @@ class window.FootballPlayer extends Circle
 				if b.prevOwner is @ # unless it changed since we were scheduled
 					b.prevOwner = null # clear off our previous ownership
 
-	drawHighlight: (ctx) ->
+	drawHighlight: (ctx) -> # Draw a highlight if we are marked as such.
 		ctx.beginPath()
 		ctx.arc 0, 0, @size.r, 0, Math.PI*2, true
 		ctx.lineWidth = w/256
@@ -493,8 +519,7 @@ class window.FootballPlayer extends Circle
 		ctx.stroke()
 		ctx.closePath()
 
-	drawJersey: (ctx) ->
-		# Draw the player's jersey name (TODO) and number.
+	drawJersey: (ctx) -> # Draw the player's jersey number.
 		ctx.textAlign = 'center'
 		ctx.strokeStyle = 'white'
 		ctx.fillStyle = 'white'
@@ -507,8 +532,7 @@ class window.FootballPlayer extends Circle
 		ctx.stroke()
 		ctx.closePath()
 
-	drawBall: (ctx) ->
-		# Draw a highlight around the player with the ball.
+	drawBall: (ctx) -> # Draw a highlight around the player with the ball.
 		ctx.beginPath()
 		ctx.arc 0,0, @size.r, 0, Math.PI*2, true
 		ctx.strokeStyle = 'brown'
@@ -522,6 +546,28 @@ class window.FootballPlayer extends Circle
 		if @highlighted then @drawHighlight ctx
 		@drawJersey ctx
 
+	tick: (dt) ->
+		@checkCollision()
+		super dt
+
+	checkCollision: () ->
+		for obj in objects
+			# skip ourselves
+			continue if obj.guid is @guid
+			# pick up loose footballs we run over 
+			switch obj.constructor
+				when Football
+					unless obj.owner? # if the ball is not owned
+						if @overlaps(obj) # and we are touching it
+							@giveBall(obj) # take it
+				when FootballPlayer
+					# skip (for now) people on our own team
+					continue if obj.jersey.team is @jersey.team
+					# if we are touching this other player
+					if @overlaps(obj)
+						# grapple them
+						# @attemptGrapple(obj)
+						obj.applyForce IMPULSE_TIME_SCALE, @pos.x.minus(obj.pos.x).scale(IMPULSE_FORCE_SCALE)
 
 Formations =
 	defense:
@@ -554,63 +600,68 @@ spawnFormation = (x,y,formation, team) ->
 MouseEvent::position = -> $ @offsetX, @offsetY
 TouchEvent::position = -> $ @touches[0].clientX, @touches[0].clientY
 
-class ImpulseVector extends Entity
+class Slingshot extends Entity
 	constructor: ->
 		super @
 		@reset()
-		teams = $.keysOf(Teams)
+		teamNames = $.keysOf(Teams)
 		canvas.bind 'mousedown', (evt) =>
 			clock.start()
 			if target = Circle.findAt(evt.position()...)
-				whoseTurn = teams[Math.floor(turnCounter / MOVES_PER_TURN) % teams.length]
+				whoseTurn = teamNames[Math.floor(turnCounter / MOVES_PER_TURN) % teamNames.length]
 				if $.isType(FootballPlayer, target) and target.jersey.team isnt whoseTurn
 					$.log "not your turn #{target.jersey.team}, it's #{whoseTurn}s"
 					return
-				@dragTarget = target
-				@dragStart = @dragTarget.pos.x
-				@dragEnd = @dragStart.slice()
-				@dragTarget.highlighted = true
+				@slingTarget = target
+				@slingStart = @slingTarget.pos.x
+				@slingEnd = @slingStart.slice()
+				@slingTarget.highlighted = true
 			evt.preventAll()
 		canvas.bind 'touchcancel', (evt) =>
-			@dragTarget?.highlighted = false
 			@reset()
 		canvas.bind 'mouseup, mouseout', (evt) =>
-			@applyForce()
+			@release()
 			evt.preventAll()
 		canvas.bind 'mousemove', (evt) =>
-			@dragEnd = evt.position()
+			@slingEnd = evt.position()
 	reset: ->
-		@dragTarget = @dragStart = @dragEnd = null
-	applyForce: ->
-		if @dragTarget
-			delta = @dragStart.minus(@dragEnd).scale(IMPULSE_FORCE_SCALE)
-			if delta.magnitude() > 0
-				ok = true
-				if $.isType Football, @dragTarget
-					# a football with no owner cannot be moved
-					unless @dragTarget.owner?
-						ok and= false
-					# and impulsing the ball is akin to throwing it, it is removed from its owner
-					@dragTarget.owner?.releaseBall()
-				if ok
-					@dragTarget.applyForce 100, delta...
-					@dragTarget.applyTorque 100, 10
-					turnCounter++
-				@dragTarget.highlighted = false
-			else clock.stop()
-		@reset()
+		@slingTarget?.highlighted = false
+		@slingTarget = @slingStart = @slingEnd = null
+	
+	# Releasing a loaded slingshot applies force to the slingTarget
+	release: ->
+		try
+			if @slingTarget?
+				force = @slingStart.minus(@slingEnd).scale(IMPULSE_FORCE_SCALE)
+				if force.magnitude() > 0
+					ok = true
+					if $.isType Football, @slingTarget
+						# a football with no owner cannot be moved
+						unless @slingTarget.owner?
+							ok and= false
+						# and impulsing the ball is akin to throwing: it is removed from its owner
+						@slingTarget.owner?.releaseBall()
+					if ok
+						@slingTarget.applyForce IMPULSE_TIME_SCALE, force...
+						turnCounter++
+					@slingTarget.highlighted = false
+				else
+					clock.stop()
+			@reset()
+		catch e
+			console.error e
 
 	draw: (ctx) ->
-		if @dragTarget and @dragEnd
-			target = @dragTarget.pos.x
+		if @slingTarget and @slingEnd
+			target = @slingTarget.pos.x
 			ctx.translate 0,0
 			ctx.beginPath()
 			ctx.moveTo target...
-			ctx.lineTo target.minus(@dragEnd).plus(target)...
+			ctx.lineTo target.minus(@slingEnd).plus(target)...
 			ctx.lineWidth = w/128
 			ctx.strokeStyle = 'white'
-			if $.isType Football, @dragTarget
-				if @dragTarget.owner?
+			if $.isType Football, @slingTarget
+				if @slingTarget.owner?
 					ctx.strokeStyle = 'yellow'
 				else
 					ctx.strokeStyle = 'red'
@@ -618,15 +669,22 @@ class ImpulseVector extends Entity
 			ctx.closePath()
 
 # Create the field itself, which draws the grass, lines, etc.
-objects.push new FootballField().position(0,0).bounds(w,h)
+objects.push gameField = new FootballField().position(0,0).bounds(w,h)
 
 $.log 'field created'
 
 # Create the game ball
 objects.push gameBall = new Football().position(w/2,h/2)
-spawnFormation(lineOfScrimmageX,lineOfScrimmageY, Formations.defense["base"], 'red')
-spawnFormation(lineOfScrimmageX,lineOfScrimmageY, Formations.offense["single-back"], 'blue')
 
 $.log 'ball created'
 
-objects.push new ImpulseVector()
+# Spawn two teams
+spawnFormation(lineOfScrimmageX,lineOfScrimmageY, Formations.defense["base"], 'red')
+spawnFormation(lineOfScrimmageX,lineOfScrimmageY, Formations.offense["single-back"], 'blue')
+
+$.log "formations spawned"
+
+# Create the slingshot
+objects.push new Slingshot()
+
+$.log "slingshot created"
