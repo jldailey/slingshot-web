@@ -1,0 +1,135 @@
+
+# Entity is the base class for all world entities; it handles physics, etc.
+class $.Entity extends $.GameObject
+	@MASS: $.clamp .0001, Infinity
+	@DRAG: $.clamp .001, 99
+	instances = $()
+	@get = (i) -> instances[i]
+	@findWithin = (radius, x...) ->
+		instances.filter((-> @x.minus(x).magnitude() < radius), 1).first()
+
+	distance_cache = Object.create null # used to help collision detection
+	@clearCaches = -> distance_cache = Object.create null
+	@removeFromCache = (ent) ->
+		return unless ('guid' of ent and ent.guid of distance_cache)
+		delete v[ent.guid] for k,v of distance_cache[ent.guid]
+		delete distance_cache[ent.guid]
+		ent
+	
+	constructor: ->
+		super @
+		instances.push @
+		@style =
+			fill: null
+			stroke: null
+		@size = # describes a bounding box/circle
+			w: 0 # width
+			h: 0 # height
+			r: 0 # radius
+		@x = $.zeros(3)
+		@drag = $.Entity.DRAG.min
+		@rot =
+			x: 0
+		@mass = $.Entity.MASS.max
+		@fullStop()
+		$.defineProperty @, 'z',
+			get: -> @x[2]
+			set: (z) -> @x[2] = z
+	
+	fill: (f) -> @style.fill = f; @
+	stroke: (f) -> @style.stroke = f; @
+
+	# come to a complete and instant stop
+	fullStop: ->
+		@currentSpeed = 0
+		@v = $.zeros(@x.length) # reset velocity
+		@a = $.zeros(@x.length) # reset acceleration
+		@rot =
+			x: @rot.x # preserve rotation
+			v: 0 # reset angular velocity
+			a: 0 # reset angular acceleration
+	
+	momentum: ->
+		@mass * @currentSpeed
+	
+	kineticEnergy: ->
+		.5 * @mass * (v = @currentSpeed) * v
+
+	position: (x...) ->
+		@x = $ x
+		Entity.removeFromCache @
+
+	# get the distance between entities, using caching
+	# suitable for use in [collision] loops in a single frame
+	getDistance: (entB) ->
+		a = @guid
+		b = entB.guid
+		if a of distance_cache and b of distance_cache[a]
+			return distance_cache[a][b]
+		distance_cache[a] or= Object.create null
+		distance_cache[b] or= Object.create null
+		distance_cache[a][b] = distance_cache[b][a] = @x.minus(entB.x).magnitude()
+
+	# push on this entity
+	applyForce: (x...) ->
+		if x.length is 1 and $.type(x[0]) in ['array','bling']
+			x = x[0]
+		@active(true).a = @a.plus $(x).or(0).scale(1/@mass)
+
+	applyTorque: (t) ->
+		@active(true).rot.a += t/@mass
+
+	# adjust our position by this offset (with sanity checks)
+	translate: (dx...) ->
+		dx = $(dx).or(0)
+		if dx.magnitude() isnt 0
+			@position @x.plus dx
+		@
+
+	rotation: (angle) ->
+		return unless isFinite(angle)
+		@rot.x = angle
+		@
+	rotate: (angle) ->
+		return unless isFinite(angle)
+		@rot.x += angle
+		@
+
+	applyPhysics: (dts) ->
+		
+		# apply acceleration -> velocity -> position
+		@translate @v.scale(dts)...
+		@v = @v.plus @a
+		@a = $.zeros(@x.length)
+		
+		# apply angular a -> v -> x
+		@rotate (@rot.v * dts)
+		@rot.v += @rot.a
+		@rot.a = 0
+
+		# TODO: apply drag
+
+	# run one frame for just this object
+	tick: (dt) ->
+		dts = dt/1000 # convert time to seconds; so physics works in m/s
+
+		@applyPhysics dts
+
+		# make sure we only compute this once per frame
+		@currentSpeed = @v.magnitude()
+	
+		if @currentSpeed is 0 and @rot.v is 0 # if we aren't moving or rotating
+			@active(false)
+
+	preDraw: (ctx) ->
+		ctx.translate @x...
+		if @rot.x
+			ctx.rotate @rot.x
+	draw: (ctx) ->
+		if @style.fill
+			ctx.fillStyle = @style.fill
+			ctx.fill()
+		if @style.stroke
+			ctx.strokeStyle = @style.stroke
+			ctx.stroke()
+

@@ -1,0 +1,41 @@
+class $.Scoreboard extends $.GameObject
+	NumberLabels = [ '1st', '2nd', '3rd', '4th' ]
+	YardLabel = (yardline) ->
+		if yardline > 50
+			return 100 - yardline
+		yardline
+	constructor: ->
+		super @
+		@z = 1
+	draw: (ctx) ->
+		ctx.fillStyle = 'black'
+		ctx.beginPath()
+		ctx.rect 0, -20, 60, 10
+		ctx.fill()
+		ctx.closePath()
+
+		ctx.fillStyle = 'white'
+		ctx.font = "3px arial"
+		ctx.fillText "HOME", 1, -16
+		ctx.textAlign = 'right'
+		ctx.fillText "AWAY", 59, -16
+
+		ctx.font = "4px arial"
+		ctx.textAlign = 'center'
+		ctx.fillText @game.homeScore, 5, -12
+		ctx.fillText @game.awayScore, 55, -12
+
+		ctx.font = "2px arial"
+		ctx.textAlign = 'center'
+		ctx.fillText "#{NumberLabels[@game.down - 1] or '--'} and #{Math.abs @game.togo} on the #{YardLabel @game.scrimmage}",
+			30, -11
+
+		ctx.fillText 'QTR', 16, -16
+		ctx.fillText NumberLabels[@game.quarter - 1], 16, -13
+
+		ctx.font = "5px courier"
+		secondsLeft = @game.secondsLeft % @game.quarterLength
+		minutes = $.padLeft "" + Math.floor(secondsLeft / 60), 2, "0"
+		seconds = $.padLeft "" + Math.floor(secondsLeft - (minutes * 60)), 2, "0"
+		ctx.fillText "#{minutes}:#{seconds}", 30, -15
+

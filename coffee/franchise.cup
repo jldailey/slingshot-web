@@ -1,0 +1,13 @@
+
+class Franchise
+	constructor: (@City, @Name) ->
+		$.defineProperty @, 'FullName',
+			get: -> "#{@City} #{@Name}"
+	showEditDialog: ->
+		$.dialog
+
+Franchises = {
+	NYG: new Franchise("New York", "Giants")
+	CHI: new Franchise("Chicago", "Bears")
+}
+

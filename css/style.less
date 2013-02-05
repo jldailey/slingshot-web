@@ -1,5 +1,20 @@
+
+.border-radius(@px) {
+	border-radius: @px;
+	-webkit-border-radius: @px;
+	-moz-border-radius: @px;
+}
+
+.border(@width, @style, @color, @radius:0) {
+	border: @width @style @color;
+	.border-radius(@radius);
+}
+
+
 #ui {
-	position: absolute;
-	left: 0;
-	top: 0;
+	.dialog {
+		width: 80%:
+		margin: 10%;
+		.border(5px, solid, darkgreen, 5px);
+	}
 }

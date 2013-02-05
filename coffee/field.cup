@@ -1,0 +1,83 @@
+
+class $.Field extends $.GameObject
+	constructor: ->
+		super @
+		@z = 0
+	draw: (ctx) ->
+		ctx.beginPath() # the first end zone
+		ctx.rect 0, -10, 60, 10
+		ctx.fillStyle = 'blue'
+		ctx.fill()
+		ctx.closePath()
+
+		# draw the grassy area
+		ctx.beginPath()
+		ctx.rect 0, 0, 60,100
+		ctx.fillStyle = 'green'
+		ctx.fill()
+		ctx.closePath()
+
+		# draw another end-zone
+		ctx.beginPath()
+		ctx.rect 0, 100, 60, 10
+		ctx.fillStyle = 'red'
+		ctx.fill()
+		ctx.closePath()
+
+		# paint the first-down lines (over the grass, under the numbers)
+		ctx.beginPath()
+		ctx.strokeStyle = 'orange'
+		ctx.lineWidth = .4
+		ctx.moveTo 0, @game.scrimmage
+		ctx.lineTo 60, @game.scrimmage
+		ctx.stroke()
+		ctx.closePath()
+
+		ctx.beginPath()
+		ctx.strokeStyle = 'blue'
+		ctx.lineWidth = .4
+		ctx.moveTo 0, @game.scrimmage + @game.togo
+		ctx.lineTo 60, @game.scrimmage + @game.togo
+		ctx.stroke()
+		ctx.closePath()
+
+		# draw all the lines
+		ctx.beginPath()
+		ctx.fillStyle = 'white'
+		ctx.strokeStyle = 'white'
+		ctx.lineWidth = .2
+		for y in [0..100] by 1
+			yardline = Math.floor(y)
+			if yardline > 50
+				yardline = 100 - yardline
+			if (yardline % 5) is 0 # draw the full line
+				ctx.moveTo 0,y
+				ctx.lineTo 60,y
+			else # draw hash marks
+				ctx.moveTo 24, y
+				ctx.lineTo 25, y
+				ctx.moveTo 35, y
+				ctx.lineTo 36, y
+
+		# paint the kicking cue marks
+		ctx.moveTo 29,3
+		ctx.lineTo 31,3
+		ctx.moveTo 29,97
+		ctx.lineTo 31,97
+		ctx.stroke()
+		ctx.closePath()
+
+		# paint the numbers
+		ctx.font = "4px courier"
+		for y in [10...100] by 10
+			yardline = Math.floor(y)
+			if yardline > 50
+				yardline = 100 - yardline
+			ctx.save()
+			ctx.translate 6, y - 2.3
+			ctx.rotate Math.PI / 2
+			ctx.fillText yardline, 0, 0
+			ctx.translate 0, -45
+			ctx.fillText yardline, 0, 0
+			ctx.restore()
+

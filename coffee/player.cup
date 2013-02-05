@@ -1,49 +1,150 @@
+# define the parameters for the basic stats for all NFL players
+unitGaussian = [$.random.gaussian, .6, .09] # a basic spread, centered on a 'decent' .6, tops out near 1.0
+unitLinear = [$.random.real]
+unitBasic = unitLinear
+basicStats = ['Mass','Eyes','Hands','Arms','Legs','Feet']
+BasicStats =
+	Mass: unitBasic
+	Eyes: unitBasic
+	Hands: unitBasic
+	Arms: unitBasic
+	Legs: unitBasic
+	Feet: unitBasic
 
-# Generate some players
-#		With stats appropriate for various positions.
-#	Score how well they fit that position
-#	Sort by score
-#	Simulate a draft
-#		Each team picks the best remaining player in a position they haven't filled.
-#		Positions to fill: QB, HB, WR, LB, CB, etc.
-#	Store the resulting teams somewhere.
+# most things that happen in a game use composite stats, which represent weighted blends of the BasicStats
+# each item here is a list of these weights, ordered like the basicStats array
+compositeStats = ['Throw','Catch','Push','Tackle','Speed']
+CompositeStats =
+	Throw:  [-2, 3, 1, 9, 0,-1] # some eyes and hands but mostly arms
+	Catch:  [-2, 3, 9,-1, 1, 0] # some eyes and legs but mostly hands, weight is a hinderance
+	Push:   [ 9,-2,-1, 0, 4, 0]
+	Tackle: [ 3, 0, 1, 9,-2,-1]
+	Speed:  [-3, 0, 0, 1, 9, 3]
 
+# each position is another level of weighting,
+# combining composite stats into suitability for a position
+# order: [throw, catch, push, tackle, speed]
+PositionScores =
+	QB: [ 9, 0, 0, 0, 1 ]
+	WR: [ 0, 8, 0, 0, 2 ]
+	OL: [ 0, 0, 8, 2, 0 ]
+	LB: [ 0, 0, 2, 6, 2 ]
 
-# Each player tracks some basic stats:
-# - Weight
-# - Speed
-# - Strength
-
-# Each position know
-# - The gaussian distribution for each stat for each player in this position
-#  - e.g., QB: { M: [toKg(200), 4], V: [9, 1], F: [16, 2] }
-# - The ideal stats: (someday this should be a set of ideal cluster centers, so you can have an ideal scrambling QB vs an ideal throwing QB)
-
-Positions =
+PositionProfiles =
 	QB:
-		kg: [230, 4]
-		sp: [9, .5]
-		st: [12, 2]
-
-DraftOrder = ["QB", "QB"]
-DraftPool = []
-
-class Franchise
-	constructor: (@city, @name) ->
-
-Franchises = [
-	new Franchise("New York", "Giants")
-	new Franchise("Miami", "Dolphins")
-]
+		Height: [$.random.gaussian, 6.1, .5]
+		Number: [$.random.integer, 1, 20]
+	WR:
+		Height: [$.random.gaussian, 6.4, .3]
+		Number: [$.random.integer, 70, 90]
+	OL:
+		Height: [$.random.gaussian, 6.2, .4]
+		Number: [$.random.integer, 40, 60]
+	LB:
+		Height: [$.random.gaussian, 6.2, .4]
+		Number: [$.random.integer, 40, 60]
 
 class Player
-	@generate = (position) ->
-		position = Positions[position]
-		p = new Player
-		p.kg = $.random.gaussian(position.kg...)
-		p.speed = $.random.gaussian(position.sp...)
-		p.strength = $.random.gaussian(position.st...)
+	FORCE: {
+		ARMS: {
+			MIN: 8
+			MAX: 24
+			DISTRIBUTION: [$.random.gaussian, 16, 2]
+			# An average lineman can apply about 16 Joules of force when bench pressing.
+			# This is my back of the envelope calculation based on benching 450 lbs (moving it 1 meter in 5 seconds).
+			# The strongest lineman I could find pressed 600 lbs, which is 24 J.
+			create: ->
+				Math.min Player.FORCE.ARMS.MAX, Math.max Player.FORCE.ARMS.MIN,
+					(d = Player.FORCE.ARMS.DISTRIBUTION)[0](d[1..])
+		}
+		LEGS: { # I'm just guessing legs are about twice as strong as arms over all.
+			MIN: 16
+			MAX: 48
+			DISTRIBUTION: [$.random.gaussian, 32, 5]
+			create: ->
+				Math.min Player.FORCE.LEGS.MAX, Math.max Player.FORCE.LEGS.MIN,
+					(d = Player.FORCE.LEGS.DISTRIBUTION)[0](d[1..])
+		}
+	}
+	MASS: {
+		MIN: $.units.to 'kg', '180lb'
+		MAX: $.units.to 'kg', '450lb'
+		DIST: [$.random.gaussian, 295, 35]
+	}
+	RADIUS: .5
+	DRAG: .078
 
-for i in [0...100] by 1
-	DraftPool.push Player.generate("QB")
+	$.type.register 'player',
+		match: (p) -> $.isType Player, p
+		hash: (p) -> $.hash p.Name+p.Number
+	
+	
+
+	@generate = ->
+
+		# Create a player shell
+		player = $.extend new Player,
+			Name: $.random.englishName()
+			Number: "00"
+			Team: null
+
+		# Apply generic starting stats
+		for stat,params of BasicStats
+			player[stat] = params[0] params.slice(1)...
+		player.applyScoreLimits()
+
+		# Define properties that read composite stat values such as Speed and Throw
+		cache = Object.create null
+		player.resetStatCache = ->
+			cache = Object.create null
+		for stat, weights of CompositeStats then do (stat, weights) ->
+			$.defineProperty player, stat,
+				get: ->
+					return if stat of cache then cache[stat]
+					else cache[stat] = $(@Mass, @Eyes, @Hands, @Arms, @Legs, @Feet).dot(CompositeStats[stat])
+		return player
+
+	scoreAs: (position) -> $(@Throw, @Catch, @Push, @Tackle, @Speed).dot PositionScores[position]
+	scoreCard: ->
+		ret = "#{@Name} (##{@Number}) Score Card: "
+		for position of PositionScores
+			ret += "#{position}: #{$.pct @scoreAs position} "
+		return ret.replace /\s$/,''
+
+	applyScoreLimits: ->
+		for base in basicStats
+			@[base] = Math.min 1.0, @[base]
+		@resetStatCache()
+
+	trainAs: (position, numPointsToTrain = 1.0) ->
+		scores = PositionScores[position]
+		weights = {
+			Throw: scores[0]
+			Catch: scores[1]
+			Push: scores[2]
+			Tackle: scores[3]
+			Speed: scores[4]
+		}
+		deltas = {}
+		b = 0 # b is an index into the list of basic stats used by CompositeStats
+		for base in basicStats
+			deltas[base] = 0
+			for stat in compositeStats
+				deltas[base] += weights[stat] * CompositeStats[stat][b]
+			b++
+		m = $.valuesOf(deltas).magnitude()
+		m *= 100.0 / numPointsToTrain
+		for base in basicStats
+			delta = deltas[base] / m # normalize the delta
+			if delta > 0
+				hardeningFactor = (1.0 - @[base]) # it gets harder to train higher stats
+			else
+				hardeningFactor = @[base] # or, likewise, its harder to lower low stats
+			delta *= hardeningFactor
+			@[base] += delta
+		@applyScoreLimits()
+
+	toString: ->
+		"#{@Name} (##{@Number}) { Throw: #{$.pct @Throw} Catch: #{$.pct @Catch} Push: #{$.pct @Push} Tackle: #{$.pct @Tackle} }"
+
 

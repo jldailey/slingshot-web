@@ -1,0 +1,50 @@
+
+$.pct = (n) ->
+	if n < 1 then n *= 100
+	Math.floor(n) + "%"
+
+Names =
+	First: ["John", "James", "Peter", "Paul", "Steve", "Stephen", "Davis", "David", "Tom", "Brian", "Van", "Jack", "Jeff", "Mark", "Ed", "Eddy" ]
+	Last: ["Smith", "Stevens", "Kelso", "Dean", "Miller", "Baker", "Miner", "Allen"]
+
+for firstName in Names.First
+	Names.Last.push firstName.replace(/e$/,'en').replace(/y$/,'i').replace(/s$/,'') + 'son'
+	if /r$/.test firstName
+		Names.Last.push firstName + 's'
+
+$.random.englishName = ->
+	$.random.element(Names.First) + " " + $.random.element(Names.Last)
+
+class $.HashSet
+	constructor: ->
+		@items = Object.create null
+	add: (item) ->
+		return unless (h = $.hash item) of @items then @items[h] = item; true
+		else false
+	remove: (item) ->
+		return if (h = $.hash item) of @items
+			delete @items[h]; true
+		else false
+	has: (item) -> $.hash(item) of @items
+
+class $.OrderedSet extends $.HashSet
+	constructor: (@orderBy) ->
+		super @
+		@ordered = $()
+	add: (item) ->
+		if super(item)
+			@ordered.sortedInsert item, @orderBy
+	remove: (item) ->
+		if super(item) and (i = @ordered.indexOf item) > -1
+			@ordered.splice i, 1
+
+$.clamp = (min, max) ->
+	f = (val) ->
+		Math.min max, Math.max min, val
+	f.min = min
+	f.max = max
+	f
+
+MouseEvent::position = -> $ @offsetX, @offsetY
+if window.TouchEvent?
+	TouchEvent::position = -> $ @touches[0].clientX, @touches[0].clientY
